@@ -41,6 +41,7 @@ export const HANDBUCH_NAV: NavGroup[] = [
       { label: 'Datenübernahme', slug: 'datenuebernahme' },
       { label: 'Kontokorrent', slug: 'kontokorrent' },
       { label: 'Kategorien', slug: 'kategorien' },
+      { label: 'Steuersätze', slug: 'steuersaetze' },
     ],
   },
   {

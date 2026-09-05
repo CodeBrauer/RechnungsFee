@@ -23,6 +23,13 @@ export type ChangelogVersion = {
 
 export const CHANGELOG: ChangelogVersion[] = [
   {
+    version: 'v0.6.12',
+    datum: 'September 2026',
+    eintraege: [
+      { typ: 'neu', text: 'GoBD-Änderungsprotokoll: Nachträgliche Software-Eingriffe (Migrationen) auf bereits versiegelte Journalbuchungen werden jetzt in einer eigenen, geschützten Tabelle protokolliert und im GoBD-Export als eigene Datei mitgeliefert – Nachweis gegenüber einer Betriebsprüfung, dass ein Eingriff ein dokumentierter Software-Fix war (Issue #385).' },
+    ],
+  },
+  {
     version: 'v0.6.11',
     datum: 'September 2026',
     eintraege: [

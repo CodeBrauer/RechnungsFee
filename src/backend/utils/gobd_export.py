@@ -8,6 +8,7 @@ Erzeugt ein ZIP-Archiv mit:
   - kunden.csv                   Kunden-Stammdaten
   - lieferanten.csv              Lieferanten-Stammdaten
   - integritaetspruefung.csv     SHA-256-Signaturprüfung
+  - aenderungsprotokoll.csv      Nachträgliche Software-Eingriffe auf versiegelte Zeilen
   - index.xml                    GDPdU-Beschreibungsdatei
   - gobd_pruefbericht.pdf        Zusammenfassender Prüfbericht
 
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from database.connection import APP_DATA_DIR
 from database.models import (
+    AenderungsProtokoll,
     Beleg,
     Journaleintrag,
     Kategorie,
@@ -251,6 +253,36 @@ def export_kategorien_csv(db: Session) -> tuple[bytes, int]:
             str(k.ust_satz_standard),
             _fmt_bool(k.ist_system),
             _fmt_datetime(k.erstellt_am),
+        ])
+
+    return _make_csv(header, rows), len(rows)
+
+
+def export_aenderungsprotokoll_csv(db: Session) -> tuple[bytes, int]:
+    """GoBD-Änderungsprotokoll als CSV (Issue #385) - Nachweis nachträglicher
+    Software-Eingriffe (Migrationen) auf bereits versiegelte Zeilen. Nicht jahresgefiltert,
+    da ein einzelner Eintrag mehrere Wirtschaftsjahre gleichzeitig betreffen kann."""
+    eintraege = (
+        db.query(AenderungsProtokoll)
+        .order_by(AenderungsProtokoll.id.asc())
+        .all()
+    )
+    header = [
+        "ID", "Tabelle", "Datensatz-ID", "Feld", "Alter Wert", "Neuer Wert",
+        "Migrations-Version", "Grund", "Erstellt am",
+    ]
+    rows = []
+    for e in eintraege:
+        rows.append([
+            str(e.id),
+            e.tabelle,
+            str(e.datensatz_id),
+            e.feld,
+            e.alter_wert or "",
+            e.neuer_wert or "",
+            str(e.migration_version),
+            e.grund,
+            _fmt_datetime(e.erstellt_am),
         ])
 
     return _make_csv(header, rows), len(rows)
@@ -686,6 +718,7 @@ def generate_gobd_zip(db: Session, jahr: int) -> bytes:
     lf_csv, lf_anzahl = export_lieferanten_csv(db)
     integ_csv, integ_stats = export_integritaet_csv(db, jahr)
     belege_csv, beleg_infos = export_belege_csv(db, jahr)
+    aenderungen_csv, aenderungen_anzahl = export_aenderungsprotokoll_csv(db)
 
     # Statistiken
     stats = _sammle_statistiken(db, jahr)
@@ -699,6 +732,7 @@ def generate_gobd_zip(db: Session, jahr: int) -> bytes:
         {"name": "lieferanten.csv",          "beschreibung": "Lieferanten-Stammdaten",                       "anzahl": lf_anzahl},
         {"name": "integritaetspruefung.csv", "beschreibung": "SHA-256-Signaturprüfung aller Datensätze",     "anzahl": integ_stats["gesamt"]},
         {"name": "belege.csv",               "beschreibung": "Belegindex (SHA256, Rechnung-Verknüpfung)",    "anzahl": len(beleg_infos)},
+        {"name": "aenderungsprotokoll.csv",  "beschreibung": "Nachträgliche Software-Eingriffe auf versiegelte Zeilen", "anzahl": aenderungen_anzahl},
     ]
 
     index_xml = _generate_index_xml(unt_dict, jahr, stats, datei_infos)
@@ -718,6 +752,7 @@ def generate_gobd_zip(db: Session, jahr: int) -> bytes:
         zf.writestr("lieferanten.csv",            lf_csv)
         zf.writestr("integritaetspruefung.csv",   integ_csv)
         zf.writestr("belege.csv",                 belege_csv)
+        zf.writestr("aenderungsprotokoll.csv",    aenderungen_csv)
         zf.writestr("gobd_pruefbericht.pdf",      pdf_bytes)
 
         # Beleg-Dateien in belege/-Unterordner (PDF/A bevorzugt, Fallback Original)

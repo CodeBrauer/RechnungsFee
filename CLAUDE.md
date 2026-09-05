@@ -78,7 +78,7 @@ Seit v0.6.0 zeigt `APP_DATA_DIR` nicht mehr direkt auf den Basisordner, sondern 
 
 ## DB-Schema-Versionierung (`src/backend/main.py`)
 
-`SCHEMA_VERSION = 156` – zentrale Konstante (wird in `main.py` gepflegt).
+`SCHEMA_VERSION = 157` – zentrale Konstante (wird in `main.py` gepflegt).
 
 ### Ablauf beim App-Start
 ```
@@ -297,6 +297,7 @@ Jede Änderung an Kategorien muss an **drei Stellen** gleichzeitig erfolgen:
 | 154 | Issue #147: unternehmen.thunderbird_aktiv BOOLEAN DEFAULT 0 – Thunderbird als dritte Mailversand-Option (bisher nur Rechnungen), hat Vorrang vor smtp_aktiv wenn gesetzt |
 | 155 | Issue #379: bank_transaktionen.ignoriert BOOLEAN DEFAULT 0 – Transaktion vom Bank-Abgleich ausschließen (z.B. interne Umbuchung zwischen eigenen Konten), getrennt von „Privat" (ist_geschaeftlich=0) da beides bei Mischkonten unabhängig relevant ist |
 | 156 | Issue #387: rechnungen.kunden_bestellnummer VARCHAR(100) – Bestellnummer des Kunden (nur Ausgang), analog zu externe_belegnr (Lieferanten-Rechnungsnr., nur Eingang); wandert bei Dokumentkonvertierung (Angebot/Auftrag/Proforma/Lieferschein/Rechnung/Ersatzrechnung/Gutschrift) automatisch mit; ZUGFeRD-Mapping auf BT-13 (BuyerOrderReferencedDocument) |
+| 157 | Issue #385: aenderungsprotokoll-Tabelle – GoBD-Nachweis für nachträgliche Software-Eingriffe (Migrationen) auf bereits versiegelte Zeilen; GoBD-geschützt (protect_aenderungsprotokoll_update/_delete); Issue-#132-Reparaturblock in _migrate_signaturen() protokolliert ab jetzt jede geänderte Zeile; Export als aenderungsprotokoll.csv im GoBD-ZIP |
 
 ### `_backup_datenbank()`
 - `sqlite3.connect().backup()` – WAL-sicher, konsistentes Snapshot
@@ -385,3 +386,27 @@ macOS: kein Apple-Zertifikat → Hinweis `xattr -cr` in Release-Notes ergänzen.
 - `_migrate_kategorien()` und `_migrate_signaturen()` laufen bei **jedem** Start (idempotent)
 - `_setup_gobd_triggers()` schützt `immutable=1`-Einträge auf DB-Ebene
 - Trigger werden vor `_migrate_signaturen()` temporär entfernt und danach neu gesetzt
+
+### Änderungsprotokoll bei Migrationen auf versiegelte Zeilen (Issue #385)
+
+Ändert eine künftige Migration ein Feld auf einer bereits immutable Zeile (`journal`,
+`vorsteuer_ansprueche`, `tagesabschluesse`) – z. B. ein weiterer Datenfix nach dem Muster von
+Issue #132 – **immer** `protokolliere_aenderung()` aus `utils/aenderungsprotokoll.py` pro
+geänderter Zeile aufrufen (funktioniert mit roher `Connection` und mit ORM-`Session`):
+
+```python
+from utils.aenderungsprotokoll import protokolliere_aenderung
+
+protokolliere_aenderung(
+    db, tabelle="journal", datensatz_id=e.id, feld="kategorie_id",
+    alter_wert=None, neuer_wert=neue_kat_id,
+    migration_version=SCHEMA_VERSION,
+    grund="Issue #NNN: kurze Begründung des Datenfix",
+)
+```
+
+Ohne diesen Eintrag lässt sich bei einer Betriebsprüfung nicht mehr nachweisen, dass ein
+Eingriff auf eine signierte Zeile ein dokumentierter Software-Fix war und keine nachträgliche
+Manipulation. Die Tabelle selbst ist GoBD-geschützt (`protect_aenderungsprotokoll_update/_delete`
+in `_setup_gobd_triggers()`) und wird im GoBD-Export als `aenderungsprotokoll.csv` mitgeliefert.
+Deckt **nicht** normale Nutzerkorrekturen ab – die laufen über den Storno-Weg.

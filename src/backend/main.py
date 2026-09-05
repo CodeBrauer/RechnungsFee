@@ -33,7 +33,7 @@ logging.root.addHandler(_log_handler)
 from database.seed import run_all_seeds
 from api import unternehmen, konten, kategorien, setup, journal, kunden, lieferanten, tagesabschluss, nummernkreise, export, rechnungen, backup, artikel, artikel_gruppen, ust_saetze, pdf_vorlagen, eks, system, ustva, zm, euer, dokumentenpakete, mail, wiederkehrend, buchungsvorlagen, anlageverzeichnis, datev, anlage_s, anlage_g, fristen_api, guv, bank_templates, bank_import, auto_filter, forderungen, cockpit, datenmigration, kontenuebersicht, schnellbuchungen, mahnwesen, profile, kontokorrent, inventurliste
 
-SCHEMA_VERSION = 156
+SCHEMA_VERSION = 157
 
 app = FastAPI(title="RechnungsFee API", version="0.1.0")
 
@@ -3370,6 +3370,28 @@ def _run_migrations() -> None:
             conn.commit()
             print("[Migration] Schema auf Version 156 (Issue #387: rechnungen.kunden_bestellnummer)")
 
+        if version < 157:
+            # Issue #385: aenderungsprotokoll-Tabelle - GoBD-Nachweis fuer nachtraegliche
+            # Software-Eingriffe (Migrationen) auf bereits versiegelte (immutable) Zeilen.
+            # Schutz-Trigger dafuer werden in _setup_gobd_triggers() angelegt (dort auch bei
+            # jedem Start neu, wie fuer journal/tagesabschluesse/vorsteuer_ansprueche).
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS aenderungsprotokoll (
+                    id INTEGER PRIMARY KEY,
+                    tabelle VARCHAR(50) NOT NULL,
+                    datensatz_id INTEGER NOT NULL,
+                    feld VARCHAR(100) NOT NULL,
+                    alter_wert TEXT,
+                    neuer_wert TEXT,
+                    migration_version INTEGER NOT NULL,
+                    grund VARCHAR(500) NOT NULL,
+                    erstellt_am DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("PRAGMA user_version = 157"))
+            conn.commit()
+            print("[Migration] Schema auf Version 157 (Issue #385: aenderungsprotokoll-Tabelle)")
+
 
 def _migrate_kategorien() -> None:
     """EKS-Zuordnungen auf offizielles Formular (04/2025) bringen und fehlende Kategorien eintragen."""
@@ -3629,8 +3651,9 @@ def _migrate_signaturen() -> None:
     In beiden Fällen wird nur der Hash aus den aktuellen Buchungsdaten neu berechnet - MIT
     EINER historisch gewachsenen Ausnahme: der Datenfix zu Issue #132 weiter unten setzt
     kategorie_id auf sehr alten, kategorielosen Einnahme-Buchungen, bevor neu signiert wird.
-    Jede so betroffene Zeile wird geloggt (siehe unten), damit dieser Eingriff nicht
-    unbemerkt bleibt.
+    Jede so betroffene Zeile wird zusätzlich in aenderungsprotokoll festgehalten (Issue #385)
+    - der GoBD-Nachweis, dass dieser Eingriff ein dokumentierter Software-Fix war und keine
+    nachträgliche Manipulation.
 
     Ablauf:
     1. Bestehende Schutz-Trigger temporär entfernen (damit UPDATE möglich ist).
@@ -3674,16 +3697,29 @@ def _migrate_signaturen() -> None:
                 )
                 .all()
             )
+            from utils.aenderungsprotokoll import protokolliere_aenderung
+            _repariert = 0
             for _e in _ohne_kat:
                 _satz = int(_e.ust_satz)
+                _neue_kat_id = None
                 if _satz == 19 and _kat19:
-                    _e.kategorie_id = _kat19.id
+                    _neue_kat_id = _kat19.id
                 elif _satz == 7 and _kat7:
-                    _e.kategorie_id = _kat7.id
+                    _neue_kat_id = _kat7.id
                 elif _kat0:
-                    _e.kategorie_id = _kat0.id
-            if _ohne_kat:
-                print(f"[Signaturen] {len(_ohne_kat)} kategorielose Einnahme-Buchung(en) repariert (Issue #132)")
+                    _neue_kat_id = _kat0.id
+                if _neue_kat_id is not None:
+                    _e.kategorie_id = _neue_kat_id
+                    _repariert += 1
+                    protokolliere_aenderung(
+                        db, tabelle="journal", datensatz_id=_e.id, feld="kategorie_id",
+                        alter_wert=None, neuer_wert=_neue_kat_id,
+                        migration_version=SCHEMA_VERSION,
+                        grund="Issue #132: kategorielose Einnahme-Buchung aus Ausgangsrechnung repariert "
+                              "(Kategorie 'Betriebseinnahmen' hieß frueher anders, siehe Migration 69)",
+                    )
+            if _repariert:
+                print(f"[Signaturen] {_repariert} kategorielose Einnahme-Buchung(en) repariert (Issue #132)")
 
         # Noch offene Einträge (immutable=False) die älter als 5 Min. sind versiegeln
         from datetime import timedelta
@@ -3796,6 +3832,22 @@ def _setup_gobd_triggers() -> None:
         BEGIN
             SELECT RAISE(ABORT,
                 'GoBD-Verstoß: Vorsteuer-Ansprüche können nicht gelöscht werden (immutable=1).');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS protect_aenderungsprotokoll_update
+        BEFORE UPDATE ON aenderungsprotokoll
+        BEGIN
+            SELECT RAISE(ABORT,
+                'GoBD-Verstoß: Das Änderungsprotokoll ist unveränderbar.');
+        END
+        """,
+        """
+        CREATE TRIGGER IF NOT EXISTS protect_aenderungsprotokoll_delete
+        BEFORE DELETE ON aenderungsprotokoll
+        BEGIN
+            SELECT RAISE(ABORT,
+                'GoBD-Verstoß: Einträge im Änderungsprotokoll können nicht gelöscht werden.');
         END
         """,
     ]

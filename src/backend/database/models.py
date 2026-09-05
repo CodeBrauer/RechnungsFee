@@ -368,6 +368,30 @@ class Tagesabschluss(Base):
     erstellt_am: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class AenderungsProtokoll(Base):
+    """GoBD-Nachweis für nachträgliche Software-Eingriffe (Migrationen) auf bereits
+    versiegelte (immutable) Zeilen in journal/vorsteuer_ansprueche/tagesabschluesse.
+
+    Deckt NICHT normale Nutzerkorrekturen ab - die laufen über den Storno-Weg und sind
+    dadurch bereits selbsterklärend im Journal sichtbar. Diese Tabelle dokumentiert nur
+    den selteneren Fall, dass eine künftige Datenfix-Migration ein Feld auf einer
+    bereits signierten Zeile ändert (Issue #385) - als Nachweis gegenüber einer
+    Betriebsprüfung, dass es sich um einen dokumentierten Software-Fix handelt und nicht
+    um eine nachträgliche Manipulation.
+    """
+    __tablename__ = "aenderungsprotokoll"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tabelle: Mapped[str] = mapped_column(String(50), nullable=False)
+    datensatz_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    feld: Mapped[str] = mapped_column(String(100), nullable=False)
+    alter_wert: Mapped[str | None] = mapped_column(Text)
+    neuer_wert: Mapped[str | None] = mapped_column(Text)
+    migration_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    grund: Mapped[str] = mapped_column(String(500), nullable=False)
+    erstellt_am: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
 # ---------------------------------------------------------------------------
 # Kunden & Lieferanten
 # ---------------------------------------------------------------------------

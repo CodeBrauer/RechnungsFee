@@ -363,12 +363,44 @@ def export_lieferanten_csv(db: Session) -> tuple[bytes, int]:
     return _make_csv(header, rows), len(rows)
 
 
+def _finde_id_luecken(alle_ids: list[int]) -> list[int]:
+    """Findet fehlende IDs innerhalb der kleinsten/größten vorhandenen ID.
+
+    Journaleintrag/Tagesabschluss verwenden ein einfaches INTEGER PRIMARY KEY (SQLite-
+    rowid-Alias, kein AUTOINCREMENT) - eine zurückgerollte, nie committete Transaktion
+    hinterlässt dadurch KEINE Lücke. Da kein Anwendungscode jemals eine Zeile dieser
+    Tabellen löscht (weder Entwurf noch versiegelt), beweist eine Lücke in der ID-Folge,
+    dass eine Zeile außerhalb der App entfernt wurde (Issue #385 - einfachere Alternative
+    zur vollen Signaturverkettung, siehe Diskussion in Issue #385/#32).
+
+    BEKANNTE EINSCHRÄNKUNG: Diese min/max-basierte Prüfung erkennt nur Lücken INNERHALB
+    der vorhandenen ID-Spanne. Wird ausgerechnet der älteste oder neueste Datensatz
+    gelöscht, verschiebt sich einfach die sichtbare Grenze - keine Lücke erkennbar. Genau
+    diesen Fall (inkl. der stärkeren Angriffsfläche bei mehreren Nutzern) würde erst eine
+    echte Signaturverkettung mit externem Zeitstempel abdecken (zurückgestellt, siehe #385).
+    """
+    if not alle_ids:
+        return []
+    vorhanden = set(alle_ids)
+    return [i for i in range(min(alle_ids), max(alle_ids) + 1) if i not in vorhanden]
+
+
 def export_integritaet_csv(db: Session, jahr: int) -> tuple[bytes, dict]:
     """
     Prüft alle SHA-256-Signaturen und erzeugt Integritäts-CSV.
     Gibt (bytes, stats_dict) zurück.
-    stats = {gesamt, gueltig, ungueltig, ohne_signatur}
+    stats = {gesamt, gueltig, ungueltig, ohne_signatur, journal_id_luecken, tagesabschluss_id_luecken}
+
+    Die ID-Lücken-Prüfung läuft bewusst global über ALLE Journaleintrag-/Tagesabschluss-
+    Zeilen (nicht nur immutable, nicht jahresgefiltert) - die ID-Folge ist global
+    fortlaufend, ein Datensatz eines anderen Jahres oder ein noch offener Entwurf zwischen
+    zwei geprüften Zeilen ist kein Fehler, sondern normal.
     """
+    alle_journal_ids = [i for (i,) in db.query(Journaleintrag.id).all()]
+    journal_id_luecken = _finde_id_luecken(alle_journal_ids)
+
+    alle_ta_ids = [i for (i,) in db.query(Tagesabschluss.id).all()]
+    tagesabschluss_id_luecken = _finde_id_luecken(alle_ta_ids)
     eintraege = (
         db.query(Journaleintrag)
         .filter(Journaleintrag.immutable == True)
@@ -436,11 +468,22 @@ def export_integritaet_csv(db: Session, jahr: int) -> tuple[bytes, dict]:
             status,
         ])
 
+    for luecken_id in journal_id_luecken:
+        rows.append([
+            "Journaleintrag", str(luecken_id), "", "", "", "", "ID-LÜCKE (Datensatz fehlt)",
+        ])
+    for luecken_id in tagesabschluss_id_luecken:
+        rows.append([
+            "Tagesabschluss", str(luecken_id), "", "", "", "", "ID-LÜCKE (Datensatz fehlt)",
+        ])
+
     stats = {
         "gesamt": gesamt,
         "gueltig": gueltig,
         "ungueltig": ungueltig,
         "ohne_signatur": ohne,
+        "journal_id_luecken": journal_id_luecken,
+        "tagesabschluss_id_luecken": tagesabschluss_id_luecken,
     }
     return _make_csv(header, rows), stats
 

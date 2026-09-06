@@ -398,6 +398,47 @@ class GobdBerichtPDF(FPDF):
         )
         self.multi_cell(0, 5.5, text)
         self.set_text_color(0, 0, 0)
+        self.ln(4)
+
+        # ID-Lücken-Prüfung (Issue #385) - bewusst als eigenständiges, zusätzliches
+        # Ergebnis getrennt von der obigen Signaturprüfung: ein Fehler in dieser neueren
+        # Prüfung soll nicht den etablierten Signaturnachweis mit entwerten.
+        self._section_title("Lückenprüfung (Journal-Nummernfolge)")
+        self.set_font("DejaVu", "", 8.5)
+        self.set_text_color(60, 60, 70)
+        self.multi_cell(0, 5.5, (
+            "Journaleintraege und Tagesabschluesse erhalten fortlaufende, nie wiederverwendete "
+            "IDs. Da kein Datensatz jemals ueber die Anwendung geloescht wird, weist eine Luecke "
+            "in dieser Nummernfolge nach, dass ein Datensatz ausserhalb der Anwendung entfernt "
+            "wurde."
+        ))
+        self.set_text_color(0, 0, 0)
+        self.ln(2)
+
+        j_luecken = integ_stats.get("journal_id_luecken", [])
+        ta_luecken = integ_stats.get("tagesabschluss_id_luecken", [])
+        luecken_gesamt = len(j_luecken) + len(ta_luecken)
+
+        if luecken_gesamt == 0:
+            self.set_fill_color(220, 252, 231)
+            self.set_draw_color(*GRUEN)
+            luecken_text = "BESTANDEN: Keine Luecke in der Journal- oder Tagesabschluss-Nummernfolge gefunden."
+            text_farbe = (20, 83, 45)
+        else:
+            self.set_fill_color(254, 226, 226)
+            self.set_draw_color(*ROT)
+            luecken_text = (
+                f"NICHT BESTANDEN: {luecken_gesamt} fehlende ID(s) in der Nummernfolge gefunden "
+                f"(Journal: {len(j_luecken)}, Tagesabschluss: {len(ta_luecken)}). "
+                "Details in der Datei 'integritaetspruefung.csv'."
+            )
+            text_farbe = (127, 29, 29)
+
+        self.set_x(10)
+        self.set_font("DejaVu", "B", 8.5)
+        self.set_text_color(*text_farbe)
+        self.multi_cell(0, 5.5, luecken_text, border=1, fill=True)
+        self.set_text_color(0, 0, 0)
 
     # --- Seite 4: Dateiverzeichnis -----------------------------------------
 

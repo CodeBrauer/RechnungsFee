@@ -27,6 +27,7 @@ export const CHANGELOG: ChangelogVersion[] = [
     datum: 'September 2026',
     eintraege: [
       { typ: 'neu', text: 'GoBD-Änderungsprotokoll: Nachträgliche Software-Eingriffe (Migrationen) auf bereits versiegelte Journalbuchungen werden jetzt in einer eigenen, geschützten Tabelle protokolliert und im GoBD-Export als eigene Datei mitgeliefert – Nachweis gegenüber einer Betriebsprüfung, dass ein Eingriff ein dokumentierter Software-Fix war (Issue #385).' },
+      { typ: 'neu', text: 'GoBD-Prüfbericht: neuer, eigenständiger Abschnitt „Lückenprüfung" weist nach, ob in der Journal- oder Tagesabschluss-Nummernfolge ein Datensatz fehlt – ein Hinweis auf eine Löschung außerhalb der Anwendung (Issue #385).' },
       { typ: 'fix', text: 'Der Kalender-Button bei Datumsfeldern öffnete unter Linux (Tauri/WebKitGTK) einen nativen Kalender, der sich nach der Auswahl nicht mehr schloss. Ersetzt durch eine eigene Kalender-Ansicht, die auf allen Plattformen identisch funktioniert (Issue #386).' },
     ],
   },

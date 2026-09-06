@@ -144,6 +144,7 @@ class Unternehmen(Base):
     # Versand (inkl. Signatur/Regeln/ggf. eingerichteter Verschlüsselung) übernimmt Thunderbird
     # selbst. Bisher nur für Rechnungen angeboten.
     thunderbird_aktiv: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
+    zugferd_anhaenge_aktiv: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0", nullable=False)
     unterschrift_bild: Mapped[str | None] = mapped_column(Text)           # base64-PNG
     unterschrift_auf_rechnung: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     standard_zahlungsziel: Mapped[int] = mapped_column(Integer, default=14, server_default="14")
@@ -463,6 +464,23 @@ class KundeBeleg(Base):
     beleg: Mapped["Beleg"] = relationship()
 
 
+class RechnungZugferdAnhang(Base):
+    """Rechnungsbegleitendes Dokument (z.B. Stundennachweis, Vertrag), das als
+    AdditionalReferencedDocument in die ZUGFeRD-PDF/A-3 eingebettet wird (Issue #383).
+    Nur bei ist_entwurf=True änderbar - danach eingefroren, analog zu original_pdf_pfad,
+    damit eine einmal versendete Rechnung reproduzierbar identisch bleibt."""
+    __tablename__ = "rechnung_zugferd_anhaenge"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    rechnung_id: Mapped[int] = mapped_column(ForeignKey("rechnungen.id", ondelete="CASCADE"), nullable=False)
+    beleg_id: Mapped[int] = mapped_column(ForeignKey("belege.id", ondelete="CASCADE"), nullable=False)
+    bezeichnung: Mapped[str | None] = mapped_column(String(200))
+    erstellt_am: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    rechnung: Mapped["Rechnung"] = relationship(back_populates="zugferd_anhaenge")
+    beleg: Mapped["Beleg"] = relationship()
+
+
 class KundeLieferadresse(Base):
     """Separate Lieferadressen eines Kunden (abweichend von Rechnungsadresse)."""
     __tablename__ = "kunden_lieferadressen"
@@ -748,6 +766,7 @@ class Rechnung(Base):
     positionen: Mapped[list["Rechnungsposition"]] = relationship(back_populates="rechnung", cascade="all, delete-orphan")
     journaleintraege: Mapped[list["Journaleintrag"]] = relationship(back_populates="rechnung")
     vorsteuer_ansprueche: Mapped[list["VorsteuerAnspruch"]] = relationship(back_populates="rechnung")
+    zugferd_anhaenge: Mapped[list["RechnungZugferdAnhang"]] = relationship(back_populates="rechnung", cascade="all, delete-orphan", order_by="RechnungZugferdAnhang.id")
 
 
 class Rechnungsposition(Base):

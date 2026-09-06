@@ -8,7 +8,10 @@ Ablauf:
 Nur für Ausgangsrechnungen (typ='ausgang'), nicht für Entwürfe oder stornierte Rechnungen.
 """
 
+import base64
 from decimal import Decimal
+
+from database.connection import APP_DATA_DIR
 
 # UN/ECE Rec 20 Einheitencodes
 _EINHEIT_CODE: dict[str, str] = {
@@ -79,6 +82,7 @@ def generate_zugferd_xml(rechnung, unternehmen: dict) -> bytes:
     from drafthorse.models.trade import LineItem
     from drafthorse.models.party import TaxRegistration
     from drafthorse.models.payment import PaymentMeans, PaymentTerms
+    from drafthorse.models.references import AdditionalReferencedDocument
 
     ist_ku = unternehmen.get("ist_kleinunternehmer", False)
 
@@ -162,6 +166,27 @@ def generate_zugferd_xml(rechnung, unternehmen: dict) -> bytes:
     if rechnung.leistung_von and rechnung.leistung_bis:
         doc.trade.settlement.period.start._value = rechnung.leistung_von
         doc.trade.settlement.period.end._value = rechnung.leistung_bis
+
+    # ── Rechnungsbegleitende Dokumente (Stundennachweis, Vertrag u.ä.) ─────────
+    # Werden als AdditionalReferencedDocument mit eingebettetem Base64-Anhang in die
+    # PDF/A-3 aufgenommen (Issue #383) - TypeCode 916 ("Referenced document") ist die in
+    # ZUGFeRD/Factur-X übliche Kennung für generische Anhänge ohne eigenen Beleg-Typ.
+    for anhang in getattr(rechnung, "zugferd_anhaenge", []):
+        beleg = anhang.beleg
+        pfad = APP_DATA_DIR / "uploads" / beleg.dateiname
+        if not pfad.exists():
+            continue
+        ref_doc = AdditionalReferencedDocument()
+        ref_doc.issuer_assigned_id = str(anhang.id)
+        ref_doc.type_code._text = "916"
+        ref_doc.name = anhang.bezeichnung or beleg.original_name
+        inhalt_b64 = base64.b64encode(pfad.read_bytes()).decode("ascii")
+        ref_doc.attached_object = (
+            beleg.mime_type or "application/octet-stream",
+            beleg.original_name,
+            inhalt_b64,
+        )
+        doc.trade.agreement.additional_references.add(ref_doc)
 
     # ── Fälligkeitsdatum + Zahlungshinweis ───────────────────────────────────
     iban = unternehmen.get("iban") or ""

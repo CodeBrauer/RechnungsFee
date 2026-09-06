@@ -14,7 +14,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from utils.pdfa_konverter import konvertiere_zu_pdfa
 from pydantic import BaseModel
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -25,8 +25,8 @@ from collections import defaultdict
 
 from database.connection import get_db, APP_DATA_DIR
 from database.models import (
-    Beleg, Forderung, Kunde, Lieferant, Rechnung, Rechnungsposition, Journaleintrag,
-    Kategorie, Unternehmen, Nummernkreis, Artikel, VorsteuerAnspruch,
+    Beleg, Forderung, Kunde, Lieferant, Rechnung, RechnungZugferdAnhang, Rechnungsposition,
+    Journaleintrag, Kategorie, Unternehmen, Nummernkreis, Artikel, VorsteuerAnspruch,
 )
 from utils.signatur import signatur_journaleintrag, signatur_vorsteueranspruch
 from utils.vorsteuer_soll import CUTOVER_DATUM as CUTOVER_DATUM_VORSTEUER
@@ -2067,6 +2067,104 @@ window.print = function() {{}};
 </script>
 </body>
 </html>""")
+
+
+# ---------------------------------------------------------------------------
+# ZUGFeRD-Anhänge (rechnungsbegleitende Dokumente, Issue #383)
+# ---------------------------------------------------------------------------
+
+class ZugferdAnhangResponse(BaseModel):
+    id: int
+    bezeichnung: Optional[str]
+    erstellt_am: datetime
+    beleg: BelegResponse
+    model_config = {"from_attributes": True}
+
+
+@router.get("/{rechnung_id}/zugferd-anhaenge", response_model=list[ZugferdAnhangResponse])
+def list_zugferd_anhaenge(rechnung_id: int, db: Session = Depends(get_db)):
+    if not db.query(Rechnung).filter(Rechnung.id == rechnung_id).first():
+        raise HTTPException(404, "Rechnung nicht gefunden.")
+    return (
+        db.query(RechnungZugferdAnhang)
+        .filter(RechnungZugferdAnhang.rechnung_id == rechnung_id)
+        .order_by(RechnungZugferdAnhang.id)
+        .all()
+    )
+
+
+@router.post("/{rechnung_id}/zugferd-anhaenge", response_model=ZugferdAnhangResponse, status_code=201)
+async def upload_zugferd_anhang(
+    rechnung_id: int,
+    datei: UploadFile = File(...),
+    bezeichnung: str = Form(""),
+    db: Session = Depends(get_db),
+):
+    unternehmen = db.query(Unternehmen).first()
+    if not unternehmen or not unternehmen.zugferd_anhaenge_aktiv:
+        raise HTTPException(409, "ZUGFeRD-Anhänge sind nicht aktiviert (Einstellungen → Unternehmen → Funktionen).")
+    rechnung = db.query(Rechnung).filter(Rechnung.id == rechnung_id).first()
+    if not rechnung:
+        raise HTTPException(404, "Rechnung nicht gefunden.")
+    if not rechnung.ist_entwurf:
+        raise HTTPException(409, "ZUGFeRD-Anhänge lassen sich nur bei Entwürfen hinzufügen - eine finalisierte Rechnung bleibt reproduzierbar unverändert.")
+    mime = datei.content_type or ""
+    if mime not in ERLAUBTE_MIME_TYPES:
+        raise HTTPException(422, f"Dateityp '{mime}' nicht erlaubt.")
+
+    inhalt = await datei.read()
+    sha256 = hashlib.sha256(inhalt).hexdigest()
+    jetzt = datetime.now()
+    ziel_dir = BELEG_DIR / str(jetzt.year) / jetzt.strftime("%m")
+    ziel_dir.mkdir(parents=True, exist_ok=True)
+
+    original = Path(datei.filename or "dokument")
+    stem = original.stem[:50]
+    suffix = original.suffix.lower() or ".bin"
+    dateiname_lokal = f"{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+    rel_pfad = f"belege/{jetzt.year}/{jetzt.strftime('%m')}/{dateiname_lokal}"
+    (ziel_dir / dateiname_lokal).write_bytes(inhalt)
+
+    beleg = Beleg(
+        dateiname=rel_pfad,
+        original_name=datei.filename or "dokument",
+        mime_type=mime,
+        dateigroesse=len(inhalt),
+        sha256=sha256,
+    )
+    db.add(beleg)
+    db.flush()
+
+    anhang = RechnungZugferdAnhang(
+        rechnung_id=rechnung_id,
+        beleg_id=beleg.id,
+        bezeichnung=bezeichnung.strip() or None,
+    )
+    db.add(anhang)
+    db.commit()
+    db.refresh(anhang)
+    return anhang
+
+
+@router.delete("/{rechnung_id}/zugferd-anhaenge/{anhang_id}", status_code=204)
+def delete_zugferd_anhang(rechnung_id: int, anhang_id: int, db: Session = Depends(get_db)):
+    rechnung = db.query(Rechnung).filter(Rechnung.id == rechnung_id).first()
+    if not rechnung:
+        raise HTTPException(404, "Rechnung nicht gefunden.")
+    if not rechnung.ist_entwurf:
+        raise HTTPException(409, "ZUGFeRD-Anhänge lassen sich nur bei Entwürfen entfernen.")
+    anhang = db.query(RechnungZugferdAnhang).filter(
+        RechnungZugferdAnhang.id == anhang_id, RechnungZugferdAnhang.rechnung_id == rechnung_id,
+    ).first()
+    if not anhang:
+        raise HTTPException(404, "Anhang nicht gefunden.")
+    beleg = anhang.beleg
+    pfad = APP_DATA_DIR / "uploads" / beleg.dateiname
+    if pfad.exists():
+        pfad.unlink()
+    db.delete(anhang)
+    db.delete(beleg)
+    db.commit()
 
 
 @router.get("/{rechnung_id}/zugferd")

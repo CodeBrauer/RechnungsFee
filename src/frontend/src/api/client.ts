@@ -236,6 +236,7 @@ export type Unternehmen = {
   smtp_zertifikat_ignorieren?: boolean
   smtp_zertifikat_fingerprint?: string | null
   thunderbird_aktiv?: boolean
+  zugferd_anhaenge_aktiv?: boolean
   unterschrift_bild?: string | null
   unterschrift_auf_rechnung?: boolean
   standard_zahlungsziel?: number
@@ -756,6 +757,37 @@ export const getKundeBelegDownloadUrl = async (kundeId: number, kbId: number) =>
   const base = await getBaseUrl()
   return `${base}/kunden/${kundeId}/belege/${kbId}/download`
 }
+
+export type ZugferdAnhangBeleg = {
+  id: number
+  dateiname: string
+  original_name: string
+  mime_type?: string
+  dateigroesse?: number
+  hochgeladen_am: string
+}
+export type ZugferdAnhang = {
+  id: number
+  bezeichnung?: string
+  erstellt_am: string
+  beleg: ZugferdAnhangBeleg
+}
+export const getZugferdAnhaenge = (rechnungId: number) =>
+  request<ZugferdAnhang[]>(`/rechnungen/${rechnungId}/zugferd-anhaenge`)
+export const uploadZugferdAnhang = async (rechnungId: number, datei: File, bezeichnung: string) => {
+  const fd = new FormData()
+  fd.append('datei', datei)
+  fd.append('bezeichnung', bezeichnung)
+  const base = await getBaseUrl()
+  const res = await fetch(`${base}/rechnungen/${rechnungId}/zugferd-anhaenge`, { method: 'POST', body: fd })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new Error(err.detail ?? 'Anhang-Upload fehlgeschlagen')
+  }
+  return res.json() as Promise<ZugferdAnhang>
+}
+export const deleteZugferdAnhang = (rechnungId: number, anhangId: number) =>
+  request<void>(`/rechnungen/${rechnungId}/zugferd-anhaenge/${anhangId}`, { method: 'DELETE' })
 
 export async function dsgvoExportKunde(id: number) {
   const base = await getBaseUrl()

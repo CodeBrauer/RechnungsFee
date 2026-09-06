@@ -298,6 +298,7 @@ Jede Änderung an Kategorien muss an **drei Stellen** gleichzeitig erfolgen:
 | 155 | Issue #379: bank_transaktionen.ignoriert BOOLEAN DEFAULT 0 – Transaktion vom Bank-Abgleich ausschließen (z.B. interne Umbuchung zwischen eigenen Konten), getrennt von „Privat" (ist_geschaeftlich=0) da beides bei Mischkonten unabhängig relevant ist |
 | 156 | Issue #387: rechnungen.kunden_bestellnummer VARCHAR(100) – Bestellnummer des Kunden (nur Ausgang), analog zu externe_belegnr (Lieferanten-Rechnungsnr., nur Eingang); wandert bei Dokumentkonvertierung (Angebot/Auftrag/Proforma/Lieferschein/Rechnung/Ersatzrechnung/Gutschrift) automatisch mit; ZUGFeRD-Mapping auf BT-13 (BuyerOrderReferencedDocument) |
 | 157 | Issue #385: aenderungsprotokoll-Tabelle – GoBD-Nachweis für nachträgliche Software-Eingriffe (Migrationen) auf bereits versiegelte Zeilen; GoBD-geschützt (protect_aenderungsprotokoll_update/_delete); Issue-#132-Reparaturblock in _migrate_signaturen() protokolliert ab jetzt jede geänderte Zeile; Export als aenderungsprotokoll.csv im GoBD-ZIP |
+| 158 | Issue #383: rechnung_zugferd_anhaenge-Tabelle (Junction-Pattern wie kunden_belege) + unternehmen.zugferd_anhaenge_aktiv BOOLEAN DEFAULT 0 – rechnungsbegleitende Dokumente (z.B. Stundennachweis, Vertrag) als AdditionalReferencedDocument (TypeCode 916) in die ZUGFeRD-PDF/A-3 eingebettet; Opt-in, nur bei Entwürfen änderbar (eingefroren nach Finalisieren, analog original_pdf_pfad) |
 
 ### `_backup_datenbank()`
 - `sqlite3.connect().backup()` – WAL-sicher, konsistentes Snapshot

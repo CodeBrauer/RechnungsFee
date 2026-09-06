@@ -33,7 +33,7 @@ logging.root.addHandler(_log_handler)
 from database.seed import run_all_seeds
 from api import unternehmen, konten, kategorien, setup, journal, kunden, lieferanten, tagesabschluss, nummernkreise, export, rechnungen, backup, artikel, artikel_gruppen, ust_saetze, pdf_vorlagen, eks, system, ustva, zm, euer, dokumentenpakete, mail, wiederkehrend, buchungsvorlagen, anlageverzeichnis, datev, anlage_s, anlage_g, fristen_api, guv, bank_templates, bank_import, auto_filter, forderungen, cockpit, datenmigration, kontenuebersicht, schnellbuchungen, mahnwesen, profile, kontokorrent, inventurliste
 
-SCHEMA_VERSION = 157
+SCHEMA_VERSION = 158
 
 app = FastAPI(title="RechnungsFee API", version="0.1.0")
 
@@ -3391,6 +3391,25 @@ def _run_migrations() -> None:
             conn.execute(text("PRAGMA user_version = 157"))
             conn.commit()
             print("[Migration] Schema auf Version 157 (Issue #385: aenderungsprotokoll-Tabelle)")
+
+        if version < 158:
+            # Issue #383: ZUGFeRD-Anhänge (rechnungsbegleitende Dokumente wie
+            # Stundennachweis/Vertrag) als AdditionalReferencedDocument einbettbar - opt-in.
+            cols158 = {r[1] for r in conn.execute(text("PRAGMA table_info(unternehmen)")).fetchall()}
+            if "zugferd_anhaenge_aktiv" not in cols158:
+                conn.execute(text("ALTER TABLE unternehmen ADD COLUMN zugferd_anhaenge_aktiv BOOLEAN NOT NULL DEFAULT 0"))
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS rechnung_zugferd_anhaenge (
+                    id INTEGER PRIMARY KEY,
+                    rechnung_id INTEGER NOT NULL REFERENCES rechnungen(id) ON DELETE CASCADE,
+                    beleg_id INTEGER NOT NULL REFERENCES belege(id) ON DELETE CASCADE,
+                    bezeichnung VARCHAR(200),
+                    erstellt_am DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
+            conn.execute(text("PRAGMA user_version = 158"))
+            conn.commit()
+            print("[Migration] Schema auf Version 158 (Issue #383: ZUGFeRD-Anhänge)")
 
 
 def _migrate_kategorien() -> None:

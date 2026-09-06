@@ -16,6 +16,7 @@ import {
   uploadBeleg, getBelegUrl, getBelegPdfaUrl, deleteBeleg, analysiereRechnung, analysiereRechnungPfad,
   getBuchungsvorlage, erledigtVorlage,
   getMahnwesenEinstellungen, getRechnungMahnungen,
+  getZugferdAnhaenge, uploadZugferdAnhang, deleteZugferdAnhang,
   type Rechnung, type RechnungCreate, type RechnungspositionCreate, type BarZahlungCreate, type BarZahlungResult,
   type ArtikelSuche, type ArtikelTyp, type AnalyseErgebnis, type LieferantVorschlag, type ZahlungSplitPosition, type ZahlungKompakt,
   type RechnungVorschauRequest,
@@ -1080,6 +1081,8 @@ function RechnungDetail({
     onError: (e: Error) => setBelegFehler(e.message),
   })
 
+  const [zugferdAnhangFehler, setZugferdAnhangFehler] = useState<string | null>(null)
+
   const korrigiereZahlungMutation = useMutation({
     mutationFn: () => korrigiereZahlung(rechnung.id, korrigiereZahlungId!, korrigiereDatum, korrigiereBetrag || undefined),
     onSuccess: (r) => {
@@ -1099,6 +1102,26 @@ function RechnungDetail({
     await openUrl(url)
   }
   const { data: unternehmen } = useQuery({ queryKey: ['unternehmen'], queryFn: getUnternehmen, staleTime: 1000 * 60 * 10 })
+
+  const zeigZugferdAnhaenge = rechnung.typ === 'ausgang' && rechnung.ist_entwurf && !!unternehmen?.zugferd_anhaenge_aktiv
+  const { data: zugferdAnhaenge = [] } = useQuery({
+    queryKey: ['zugferd-anhaenge', rechnung.id],
+    queryFn: () => getZugferdAnhaenge(rechnung.id),
+    enabled: zeigZugferdAnhaenge,
+  })
+  const zugferdAnhangUploadMutation = useMutation({
+    mutationFn: (datei: File) => uploadZugferdAnhang(rechnung.id, datei, datei.name),
+    onSuccess: () => {
+      setZugferdAnhangFehler(null)
+      qc.invalidateQueries({ queryKey: ['zugferd-anhaenge', rechnung.id] })
+    },
+    onError: (e: Error) => setZugferdAnhangFehler(e.message),
+  })
+  const zugferdAnhangDeleteMutation = useMutation({
+    mutationFn: (anhangId: number) => deleteZugferdAnhang(rechnung.id, anhangId),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['zugferd-anhaenge', rechnung.id] }),
+    onError: (e: Error) => setZugferdAnhangFehler(e.message),
+  })
 
   const restbetrag = parseFloat(rechnung.brutto_gesamt) - parseFloat(rechnung.bezahlt_betrag)
   const fortschritt = Math.abs(parseFloat(rechnung.brutto_gesamt)) > 0.004
@@ -2304,6 +2327,46 @@ function RechnungDetail({
           )}
           {belegFehler && (
             <p className="text-xs text-red-600 dark:text-red-400 mt-1">{belegFehler}</p>
+          )}
+        </div>}
+
+        {/* ZUGFeRD-Anhänge – rechnungsbegleitende Dokumente, nur bei Entwürfen (Issue #383) */}
+        {zeigZugferdAnhaenge && <div>
+          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">ZUGFeRD-Anhänge</p>
+          <div className="space-y-1.5">
+            {zugferdAnhaenge.map((a) => (
+              <div key={a.id} className="flex items-center justify-between gap-2 bg-slate-50 dark:bg-slate-900 rounded-lg px-3 py-2">
+                <span className="text-sm text-slate-600 dark:text-slate-300 truncate" title={a.beleg.original_name}>
+                  📎 {a.beleg.original_name}
+                </span>
+                <button
+                  onClick={() => zugferdAnhangDeleteMutation.mutate(a.id)}
+                  disabled={zugferdAnhangDeleteMutation.isPending}
+                  className="shrink-0 text-xs text-red-500 dark:text-red-400 hover:text-red-700 dark:hover:text-red-300"
+                  title="Anhang entfernen"
+                >
+                  🗑
+                </button>
+              </div>
+            ))}
+            <label className="flex items-center gap-2 cursor-pointer text-sm text-slate-500 dark:text-slate-400 bg-slate-50 dark:bg-slate-900 rounded-lg px-3 py-2.5 border border-dashed border-slate-300 dark:border-slate-600 hover:border-blue-400 dark:hover:border-blue-500 transition-colors">
+              <span>📎</span>
+              <span>{zugferdAnhangUploadMutation.isPending ? 'Wird hochgeladen…' : 'Dokument anhängen (z. B. Stundennachweis, Vertrag)'}</span>
+              <input
+                type="file"
+                accept="application/pdf,image/jpeg,image/png,image/tiff"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) zugferdAnhangUploadMutation.mutate(f)
+                  e.target.value = ''
+                }}
+                disabled={zugferdAnhangUploadMutation.isPending}
+              />
+            </label>
+          </div>
+          {zugferdAnhangFehler && (
+            <p className="text-xs text-red-600 dark:text-red-400 mt-1">{zugferdAnhangFehler}</p>
           )}
         </div>}
       </div>

@@ -898,6 +898,23 @@ function FirmendatenSektion({ data, activeTab }: { data: Unternehmen; activeTab:
             </div>
           </label>
 
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!form.zugferd_anhaenge_aktiv}
+              onChange={ev => set('zugferd_anhaenge_aktiv', ev.target.checked)}
+              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600"
+            />
+            <div>
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                ZUGFeRD-Anhänge aktivieren
+              </span>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Rechnungsbegleitende Dokumente (z. B. Stundennachweis, Vertrag) direkt in die ZUGFeRD-PDF/A-3 einbetten. Anhänge lassen sich nur bei Entwürfen hinzufügen – nach dem Finalisieren bleibt die Rechnung unverändert.
+              </p>
+            </div>
+          </label>
+
           <label className={`flex items-start gap-3 ${mehrereProfile ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
             <input
               type="checkbox"

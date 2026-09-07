@@ -228,14 +228,22 @@ def generate_zugferd_xml(rechnung, unternehmen: dict) -> bytes:
     doc.trade.settlement.currency_code = "EUR"
 
     # ── Positionen ────────────────────────────────────────────────────────────
+    # rechnungspositionen.netto ist seit Migration 139 (Issue #332) der reine
+    # Nettoeinzelpreis (Stückpreis, VOR Menge und Rabatt) - .brutto/.ust_betrag sind
+    # dagegen bereits fertige Positionssummen (Menge x Einzelpreis, NACH Rabatt).
+    # brutto - ust_betrag ergibt daher die korrekte Netto-Positionssumme, unabhängig
+    # vom eingabemodus (netto/brutto) - direkt pos.netto als Zeilensumme zu verwenden
+    # ignorierte Menge und Rabatt komplett (Issue #389).
     for pos in sorted(rechnung.positionen, key=lambda p: p.position_nr):
         li = LineItem()
         li.document.line_id._text = str(pos.position_nr)
         li.product.name = pos.beschreibung or "-"
 
-        # Nettopreis pro Einheit
+        netto_gesamt = _d(pos.brutto or 0) - _d(pos.ust_betrag or 0)
+
+        # Nettopreis pro Einheit (nach Rabatt) - BT-146
         einheit_code = _einheit_code(pos.einheit)
-        netto_pro_einheit = _d(pos.netto / pos.menge) if pos.menge else _d(pos.netto)
+        netto_pro_einheit = _d(netto_gesamt / pos.menge) if pos.menge else netto_gesamt
         li.agreement.net.amount = netto_pro_einheit
         li.agreement.net.basis_quantity = (Decimal("1"), einheit_code)
 
@@ -247,8 +255,8 @@ def generate_zugferd_xml(rechnung, unternehmen: dict) -> bytes:
         li.settlement.trade_tax.category_code = _steuerkategorie(pos.ust_satz, ist_ku)
         li.settlement.trade_tax.rate_applicable_percent = _ust_satz(pos.ust_satz)
 
-        # Zeilensumme
-        li.settlement.monetary_summation.total_amount = _d(pos.netto)
+        # Zeilensumme (BT-131) – Menge x Einzelpreis, nach Rabatt
+        li.settlement.monetary_summation.total_amount = netto_gesamt
 
         doc.trade.items.add(li)
 
@@ -258,7 +266,7 @@ def generate_zugferd_xml(rechnung, unternehmen: dict) -> bytes:
         key = str(pos.ust_satz)
         if key not in steuern:
             steuern[key] = {"satz": pos.ust_satz, "basis": Decimal("0"), "betrag": Decimal("0")}
-        steuern[key]["basis"] += _d(pos.netto or 0)
+        steuern[key]["basis"] += _d(pos.brutto or 0) - _d(pos.ust_betrag or 0)
         steuern[key]["betrag"] += _d(pos.ust_betrag or 0)
 
     for eintrag in steuern.values():

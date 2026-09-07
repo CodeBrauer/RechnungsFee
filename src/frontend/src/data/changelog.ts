@@ -30,6 +30,7 @@ export const CHANGELOG: ChangelogVersion[] = [
       { typ: 'neu', text: 'GoBD-Prüfbericht: neuer, eigenständiger Abschnitt „Lückenprüfung" weist nach, ob in der Journal- oder Tagesabschluss-Nummernfolge ein Datensatz fehlt – ein Hinweis auf eine Löschung außerhalb der Anwendung (Issue #385).' },
       { typ: 'fix', text: 'Der Kalender-Button bei Datumsfeldern öffnete unter Linux (Tauri/WebKitGTK) einen nativen Kalender, der sich nach der Auswahl nicht mehr schloss. Ersetzt durch eine eigene Kalender-Ansicht, die auf allen Plattformen identisch funktioniert (Issue #386).' },
       { typ: 'neu', text: 'ZUGFeRD-Anhänge (optional, in den Unternehmenseinstellungen aktivierbar): rechnungsbegleitende Dokumente wie Stundennachweis oder Vertrag lassen sich bei Entwürfen direkt an die Rechnung anhängen und werden beim Export automatisch in die ZUGFeRD-PDF/A-3 eingebettet, statt separat verschickt werden zu müssen. Vorschlag von ask4it (Issue #383).' },
+      { typ: 'fix', text: 'ZUGFeRD-Export: Bei Rechnungspositionen mit einer Menge ungleich 1 wurde im XML fälschlich der Nettoeinzelpreis statt der Positionssumme (Menge × Einzelpreis) verwendet – betraf den Zeilenpreis (BT-146) sowie sämtliche Kopfsummen (BT-106, BT-109, BT-112, BT-115), die dadurch bei größeren Mengen deutlich zu niedrig ausfielen. Danke an ask4it für die sehr genaue Analyse anhand der BT-Feldnummern (Issue #389).' },
     ],
   },
   {

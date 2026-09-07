@@ -188,11 +188,15 @@ def _erloes_kategorie(db: Session, rechnung: "Rechnung") -> tuple[int | None, "K
         ).first()
         if kat_25a:
             return kat_25a.id, kat_25a
-    # Dominanter USt-Satz = Satz mit höchstem Netto-Anteil
+    # Dominanter USt-Satz = Satz mit höchstem Netto-Anteil. pos.netto ist der reine
+    # Stückpreis (seit Migration 139) - brutto - ust_betrag liefert die tatsächliche
+    # Positionssumme (Menge x Einzelpreis, nach Rabatt), sonst würde bei gemischten
+    # Mengen der falsche Satz als "dominant" ausgewählt (Issue #389, Nebenfund).
     satz_summen: dict[int, Decimal] = {}
     for pos in rechnung.positionen:
         satz = int(pos.ust_satz)
-        satz_summen[satz] = satz_summen.get(satz, Decimal("0")) + pos.netto
+        netto_gesamt = (pos.brutto or Decimal("0")) - (pos.ust_betrag or Decimal("0"))
+        satz_summen[satz] = satz_summen.get(satz, Decimal("0")) + netto_gesamt
     dom_satz = max(satz_summen, key=lambda s: satz_summen[s])
     namen = {19: "Betriebseinnahmen", 7: "Betriebseinnahmen (7%)", 0: "Betriebseinnahmen (0%)"}
     name = namen.get(dom_satz, "Betriebseinnahmen")

@@ -225,10 +225,15 @@ def _sachkonto(j: Journaleintrag, skr: str, db: Optional[Session] = None) -> Opt
     if db and j.rechnung_id and j.art == "Einnahme":
         re = db.query(Rechnung).filter(Rechnung.id == j.rechnung_id).first()
         if re and re.typ == "ausgang" and re.positionen:
+            # pos.netto ist der reine Stückpreis (seit Migration 139) - brutto - ust_betrag
+            # liefert die tatsächliche Positionssumme (Menge x Einzelpreis, nach Rabatt),
+            # sonst würde bei gemischten Mengen der falsche Satz als "dominant" ausgewählt
+            # (Issue #389, Nebenfund, analog zu _erloes_kategorie() in api/rechnungen.py).
             satz_summen: dict[int, Decimal] = {}
             for pos in re.positionen:
                 satz = int(pos.ust_satz or 0)
-                satz_summen[satz] = satz_summen.get(satz, Decimal("0")) + (pos.netto or Decimal("0"))
+                netto_gesamt = (pos.brutto or Decimal("0")) - (pos.ust_betrag or Decimal("0"))
+                satz_summen[satz] = satz_summen.get(satz, Decimal("0")) + netto_gesamt
             dom_satz = max(satz_summen, key=lambda s: satz_summen[s]) if satz_summen else 19
             namen = {19: "Betriebseinnahmen", 7: "Betriebseinnahmen (7%)", 0: "Betriebseinnahmen (0%)"}
             kat = db.query(Kategorie).filter(

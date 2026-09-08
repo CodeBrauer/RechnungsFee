@@ -33,7 +33,7 @@ logging.root.addHandler(_log_handler)
 from database.seed import run_all_seeds
 from api import unternehmen, konten, kategorien, setup, journal, kunden, lieferanten, tagesabschluss, nummernkreise, export, rechnungen, backup, artikel, artikel_gruppen, ust_saetze, pdf_vorlagen, eks, system, ustva, zm, euer, dokumentenpakete, mail, wiederkehrend, buchungsvorlagen, anlageverzeichnis, datev, anlage_s, anlage_g, fristen_api, guv, bank_templates, bank_import, auto_filter, forderungen, cockpit, datenmigration, kontenuebersicht, schnellbuchungen, mahnwesen, profile, kontokorrent, inventurliste
 
-SCHEMA_VERSION = 158
+SCHEMA_VERSION = 159
 
 app = FastAPI(title="RechnungsFee API", version="0.1.0")
 
@@ -3410,6 +3410,49 @@ def _run_migrations() -> None:
             conn.execute(text("PRAGMA user_version = 158"))
             conn.commit()
             print("[Migration] Schema auf Version 158 (Issue #383: ZUGFeRD-Anhänge)")
+
+        if version < 159:
+            # Issue #372: Migration 153 hat journal.ust_sonderfall / vorsteuer_ansprueche.
+            # ust_sonderfall nur fuer Zeilen korrigiert, die BEREITS faelschlich '13b_abs1'
+            # gespeichert hatten (UPDATE ... WHERE ust_sonderfall = '13b_abs1'). Alt-Buchungen
+            # von VOR Einfuehrung der Sonderfall-Erkennung haben dort schlicht NULL stehen,
+            # obwohl ihre verknuepfte Kategorie laengst ein korrektes kategorien.ust_sonderfall
+            # traegt (Namens-Backfill aus Migration 153) - ustva.py liest aber ausschliesslich
+            # das auf der Zeile SELBST gespeicherte Tag (nicht das der Kategorie), wodurch diese
+            # Alt-Buchungen in der UStVA nirgends mehr auftauchen (KZ 46/47/84/85/67 fehlen, oder
+            # die Vorsteuer faellt versehentlich unter die normale KZ 66).
+            #
+            # Bewusst NUR das Tag nachtragen, keine Betraege (netto_betrag/ust_betrag/
+            # vorsteuer_betrag) anfassen - ob bei einzelnen Alt-Buchungen zusaetzlich auch die
+            # Arithmetik falsch war (z.B. ueber den Bank-Import-Pfad, der vor seinem eigenen Fix
+            # gar keine Sonderfall-Erkennung fuer Eingangsrechnungen hatte), laesst sich generisch
+            # nicht sicher entscheiden - siehe Diskussion in Issue #372.
+            from utils.aenderungsprotokoll import protokolliere_aenderung
+
+            _grund159 = "Issue #372: ust_sonderfall-Tag aus verknuepfter Kategorie nachgetragen (Alt-Buchung vor Migration 153/375)"
+            for _tabelle159 in ("journal", "vorsteuer_ansprueche"):
+                _betroffene = conn.execute(text(f"""
+                    SELECT t.id, k.ust_sonderfall
+                    FROM {_tabelle159} t
+                    JOIN kategorien k ON k.id = t.kategorie_id
+                    WHERE t.ust_sonderfall IS NULL AND k.ust_sonderfall IS NOT NULL
+                """)).fetchall()
+                for _id159, _sonderfall159 in _betroffene:
+                    conn.execute(
+                        text(f"UPDATE {_tabelle159} SET ust_sonderfall = :sf WHERE id = :id"),
+                        {"sf": _sonderfall159, "id": _id159},
+                    )
+                    protokolliere_aenderung(
+                        conn, tabelle=_tabelle159, datensatz_id=_id159, feld="ust_sonderfall",
+                        alter_wert=None, neuer_wert=_sonderfall159,
+                        migration_version=159, grund=_grund159,
+                    )
+                if _betroffene:
+                    print(f"[Migration] {len(_betroffene)} Alt-Buchung(en) in {_tabelle159} auf ust_sonderfall nachgetragen (Issue #372)")
+
+            conn.execute(text("PRAGMA user_version = 159"))
+            conn.commit()
+            print("[Migration] Schema auf Version 159 (Issue #372: ust_sonderfall-Backfill fuer Alt-Buchungen)")
 
 
 def _migrate_kategorien() -> None:

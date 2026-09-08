@@ -78,7 +78,7 @@ Seit v0.6.0 zeigt `APP_DATA_DIR` nicht mehr direkt auf den Basisordner, sondern 
 
 ## DB-Schema-Versionierung (`src/backend/main.py`)
 
-`SCHEMA_VERSION = 157` – zentrale Konstante (wird in `main.py` gepflegt).
+`SCHEMA_VERSION = 159` – zentrale Konstante (wird in `main.py` gepflegt).
 
 ### Ablauf beim App-Start
 ```
@@ -299,6 +299,7 @@ Jede Änderung an Kategorien muss an **drei Stellen** gleichzeitig erfolgen:
 | 156 | Issue #387: rechnungen.kunden_bestellnummer VARCHAR(100) – Bestellnummer des Kunden (nur Ausgang), analog zu externe_belegnr (Lieferanten-Rechnungsnr., nur Eingang); wandert bei Dokumentkonvertierung (Angebot/Auftrag/Proforma/Lieferschein/Rechnung/Ersatzrechnung/Gutschrift) automatisch mit; ZUGFeRD-Mapping auf BT-13 (BuyerOrderReferencedDocument) |
 | 157 | Issue #385: aenderungsprotokoll-Tabelle – GoBD-Nachweis für nachträgliche Software-Eingriffe (Migrationen) auf bereits versiegelte Zeilen; GoBD-geschützt (protect_aenderungsprotokoll_update/_delete); Issue-#132-Reparaturblock in _migrate_signaturen() protokolliert ab jetzt jede geänderte Zeile; Export als aenderungsprotokoll.csv im GoBD-ZIP |
 | 158 | Issue #383: rechnung_zugferd_anhaenge-Tabelle (Junction-Pattern wie kunden_belege) + unternehmen.zugferd_anhaenge_aktiv BOOLEAN DEFAULT 0 – rechnungsbegleitende Dokumente (z.B. Stundennachweis, Vertrag) als AdditionalReferencedDocument (TypeCode 916) in die ZUGFeRD-PDF/A-3 eingebettet; Opt-in, nur bei Entwürfen änderbar (eingefroren nach Finalisieren, analog original_pdf_pfad) |
+| 159 | Issue #372: Datenfix – journal.ust_sonderfall / vorsteuer_ansprueche.ust_sonderfall bei Alt-Buchungen aus der verknüpften Kategorie nachgetragen, wo NULL (Migration 153 hatte nur bereits fälschlich '13b_abs1' getaggte Zeilen korrigiert, echte NULL-Altbuchungen blieben liegen und fehlten dadurch komplett in der UStVA); nur das Tag, keine Beträge angefasst; jede geänderte Zeile per protokolliere_aenderung() im Änderungsprotokoll dokumentiert |
 
 ### `_backup_datenbank()`
 - `sqlite3.connect().backup()` – WAL-sicher, konsistentes Snapshot

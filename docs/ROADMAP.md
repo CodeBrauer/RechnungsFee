@@ -162,4 +162,6 @@ Wenn eine Beta-Funktion sich bei der Testgruppe bewährt hat, wird **nicht der g
 
 - **Vollständige BWA: Betriebswirtschaftliche Auswertung** – Erweiterung des Cockpits um Vorjahresvergleich als zweite Spalte (aktueller Monat / Quartal / Jahr vs. Vorjahresperiode), Exportfunktion als PDF im klassischen BWA-Format; für Nutzer die monatlich mit Steuerberater oder Bank kommunizieren (Issue #232)
 
+- **Konfigurierbarer Speicherort + sprechende Dateinamen für archivierte Original-PDFs** (Issue #390) – aktuell fest unter `uploads/rechnungen/{interne_DB_ID}.pdf` im Profil-Datenordner, ohne Trennung Eingang/Ausgang; Wunsch: selbst wählbarer Speicherort sowie Dateiname nach Rechnungsnummer mit Präfix (z. B. `ER-260001.pdf`/`RE-260001.pdf`). Setzt eine Lösung für bereits archivierte Bestandsdateien voraus (alte ID-basierte Pfade bleiben in `rechnung.original_pdf_pfad` referenziert).
+
 - **Sammelposten / Sammelabschreibung (§6 Abs. 2a EStG)** – Wahlrecht für bewegliche Wirtschaftsgüter zwischen 250 € und 1.000 € netto: Pool pro Wirtschaftsjahr, pauschale Auflösung über 5 Jahre à 20 % (Anlage EÜR Zeile 37, Hilfsblatt Zeilen 63–81). Braucht eigene mehrjährige Pool-Verwaltung (ähnlich Anlagenverzeichnis, aber pro Jahrgang statt pro Einzelgut) – deutlich aufwändiger als die übrige EÜR/AVEÜR-Logik. Zurückgestellt bis explizit nachgefragt (Issue #265, Diskussion 2026-07).

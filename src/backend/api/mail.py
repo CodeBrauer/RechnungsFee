@@ -120,7 +120,7 @@ def _pdf_bytes_fuer(rechnung_id: int, db: Session) -> tuple[bytes, str]:
 
     # Original speichern (erste echte Mail)
     if darf_archiviert and not r.original_pdf_pfad:
-        rel_pfad = speichere_original_pdf(APP_DATA_DIR, r.id, pdf_bytes)
+        rel_pfad = speichere_original_pdf(APP_DATA_DIR, r, pdf_bytes)
         r.original_pdf_pfad = rel_pfad
         r.ausgegeben = True
         r.ausgegeben_am = datetime.now()

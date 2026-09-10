@@ -1986,7 +1986,7 @@ def rechnung_als_pdf(rechnung_id: int, vorlage: int = -1, download: bool = False
 
     # Original speichern (erstes echtes Drucken/Mailen)
     if darf_archiviert and not rechnung.original_pdf_pfad:
-        rel_pfad = speichere_original_pdf(APP_DATA_DIR, rechnung.id, pdf_bytes)
+        rel_pfad = speichere_original_pdf(APP_DATA_DIR, rechnung, pdf_bytes)
         rechnung.original_pdf_pfad = rel_pfad
         rechnung.ausgegeben = True
         rechnung.ausgegeben_am = datetime.now()

@@ -19,11 +19,24 @@ def _storage_dir(data_dir: Path) -> Path:
     return d
 
 
-def speichere_original_pdf(data_dir: Path, rechnung_id: int, pdf_bytes: bytes) -> str:
-    """Speichert Original-PDF auf Disk. Gibt relativen Pfad zurück (für DB-Feld)."""
-    pfad = _storage_dir(data_dir) / f"{rechnung_id}.pdf"
+def speichere_original_pdf(data_dir: Path, rechnung, pdf_bytes: bytes) -> str:
+    """Speichert Original-PDF auf Disk. Gibt relativen Pfad zurück (für DB-Feld).
+
+    Dateiname: <Rechnungsnummer>_<interne-ID>.pdf (Issue #390) - vorher war es nur die
+    interne ID, ohne Unterscheidung Eingang/Ausgang und ohne Bezug zur Rechnungsnummer.
+    Die ID bleibt als Suffix Pflicht: rechnungsnummer ist bei Eingangsrechnungen die
+    manuell erfasste Lieferanten-Rechnungsnr. (kein DB-Unique-Constraint) - zwei Belege
+    unterschiedlicher Lieferanten mit zufällig identischer Nummer würden sich sonst beim
+    Archivieren gegenseitig überschreiben. Nur bereits archivierte (also bestehende)
+    Originale sind von der neuen Benennung nicht betroffen - rechnung.original_pdf_pfad
+    speichert pro Zeile den tatsächlich verwendeten Pfad, diese Funktion wird pro
+    Rechnung ohnehin nur beim allerersten Archivieren aufgerufen.
+    """
+    nr = (rechnung.rechnungsnummer or str(rechnung.id)).replace("/", "-").replace(" ", "_")
+    dateiname = f"{nr}_{rechnung.id}.pdf"
+    pfad = _storage_dir(data_dir) / dateiname
     pfad.write_bytes(pdf_bytes)
-    return f"{_RECHNUNGEN_PDF_SUBDIR}/{rechnung_id}.pdf"
+    return f"{_RECHNUNGEN_PDF_SUBDIR}/{dateiname}"
 
 
 def lade_original_mit_kopie_stempel(data_dir: Path, rel_pfad: str) -> bytes | None:

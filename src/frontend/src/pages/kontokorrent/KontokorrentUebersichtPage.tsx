@@ -9,11 +9,13 @@ function formatEuro(val: number): string {
 }
 
 type Filter = 'alle' | 'offen' | 'guthaben'
+type TypFilter = 'alle' | 'kunde' | 'lieferant'
 
 export function KontokorrentUebersichtPage() {
   const mxAuto = useMxAuto()
   const navigate = useNavigate()
   const [filter, setFilter] = useState<Filter>('alle')
+  const [typFilter, setTypFilter] = useState<TypFilter>('alle')
 
   const { data = [], isLoading } = useQuery({
     queryKey: ['kontokorrent-uebersicht'],
@@ -21,7 +23,9 @@ export function KontokorrentUebersichtPage() {
     staleTime: 1000 * 30,
   })
 
-  const gefiltert = filter === 'alle' ? data : data.filter(p => p.status === filter)
+  const gefiltert = data
+    .filter(p => filter === 'alle' || p.status === filter)
+    .filter(p => typFilter === 'alle' || p.partner_typ === typFilter)
 
   const summeOffen = data.filter(p => p.status === 'offen').reduce((s, p) => s + p.saldo, 0)
   const summeGuthaben = data.filter(p => p.status === 'guthaben').reduce((s, p) => s + Math.abs(p.saldo), 0)
@@ -51,7 +55,7 @@ export function KontokorrentUebersichtPage() {
         </div>
       </div>
 
-      <div className="flex gap-2 mb-3">
+      <div className="flex flex-wrap items-center gap-2 mb-3">
         {(['alle', 'offen', 'guthaben'] as Filter[]).map(f => (
           <button
             key={f}
@@ -64,6 +68,21 @@ export function KontokorrentUebersichtPage() {
             }`}
           >
             {f === 'alle' ? 'Alle' : f === 'offen' ? 'Offen' : 'Guthaben'}
+          </button>
+        ))}
+        <span className="w-px h-4 bg-slate-200 dark:bg-slate-600 mx-1" />
+        {(['alle', 'kunde', 'lieferant'] as TypFilter[]).map(t => (
+          <button
+            key={t}
+            type="button"
+            onClick={() => setTypFilter(t)}
+            className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+              typFilter === t
+                ? 'bg-blue-600 border-blue-600 text-white'
+                : 'border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'
+            }`}
+          >
+            {t === 'alle' ? 'Alle Typen' : t === 'kunde' ? 'Kunden' : 'Lieferanten'}
           </button>
         ))}
       </div>

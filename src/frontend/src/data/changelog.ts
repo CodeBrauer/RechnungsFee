@@ -23,6 +23,13 @@ export type ChangelogVersion = {
 
 export const CHANGELOG: ChangelogVersion[] = [
   {
+    version: 'v0.6.13',
+    datum: 'September 2026',
+    eintraege: [
+      { typ: 'neu', text: 'Kontokorrent-Übersicht: zusätzlicher Filter nach Kunden/Lieferanten, neben dem bestehenden Alle/Offen/Guthaben-Filter. Vorschlag aus der Community (Issue #393).' },
+    ],
+  },
+  {
     version: 'v0.6.12',
     datum: 'September 2026',
     eintraege: [

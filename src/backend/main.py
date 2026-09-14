@@ -33,7 +33,7 @@ logging.root.addHandler(_log_handler)
 from database.seed import run_all_seeds
 from api import unternehmen, konten, kategorien, setup, journal, kunden, lieferanten, tagesabschluss, nummernkreise, export, rechnungen, backup, artikel, artikel_gruppen, ust_saetze, pdf_vorlagen, eks, system, ustva, zm, euer, dokumentenpakete, mail, wiederkehrend, buchungsvorlagen, anlageverzeichnis, datev, anlage_s, anlage_g, fristen_api, guv, bank_templates, bank_import, auto_filter, forderungen, cockpit, datenmigration, kontenuebersicht, schnellbuchungen, mahnwesen, profile, kontokorrent, inventurliste
 
-SCHEMA_VERSION = 159
+SCHEMA_VERSION = 160
 
 app = FastAPI(title="RechnungsFee API", version="0.1.0")
 
@@ -3453,6 +3453,65 @@ def _run_migrations() -> None:
             conn.execute(text("PRAGMA user_version = 159"))
             conn.commit()
             print("[Migration] Schema auf Version 159 (Issue #372: ust_sonderfall-Backfill fuer Alt-Buchungen)")
+
+        if version < 160:
+            # Issue #372 (Folgefund nach Migration 159): das Tag-Backfill allein reichte nicht -
+            # bei Uwe Koslowskis Alt-Buchungen stehen ust_satz/ust_betrag/vorsteuer_betrag
+            # zusaetzlich auf 0, weil die additive §13b-Berechnung beim urspruenglichen Erfassen
+            # (vor Einfuehrung der Reverse-Charge-Logik) schlicht noch nicht existierte. Bestaetigt
+            # von Uwe: nur 19% betroffen, nur Dienstleistungs-Kategorien (keine Wareneinkauf-EU/
+            # ig_erwerb-Alt-Buchungen).
+            #
+            # Bewusst eng begrenzt auf 13b_abs1/13b_abs2: dort ist ein gespeicherter 0%-Satz nie
+            # legitim (beide hinterlegten Kategorien haben ust_satz_standard=19, keine 0%-Variante
+            # vorgesehen). NICHT angefasst: ig_erwerb (dort ist 0% ein echter Fall, eigene KZ 90)
+            # und einfuhr_ust (dort ist der Betrag ein manuell eingetragener Festwert von DHL/Zoll,
+            # kein Prozentsatz - ust_satz_standard steht dort sogar bewusst auf 0).
+            #
+            # Zahlbetrag bleibt unangetastet (netto_betrag/brutto_betrag) - Reverse Charge wird
+            # additiv gebucht (Zahlbetrag = Netto), die deutsche USt/Vorsteuer kommt nur
+            # informativ fuer die UStVA obendrauf, siehe _berechne_vorsteuer() in rechnungen.py/
+            # journal.py sowie _buche_pfad_a() in bank_import.py fuer dasselbe Muster bei
+            # laufenden Buchungen.
+            from decimal import Decimal as _Dec160
+            from utils.aenderungsprotokoll import protokolliere_aenderung
+
+            _grund160 = "Issue #372: §13b-USt/Vorsteuer auf Alt-Buchung additiv nachberechnet (19% von unveraendertem Zahlbetrag, Zahlbetrag selbst unangetastet)"
+            _benoetigt160 = {"id", "netto_betrag", "ust_satz", "ust_betrag", "vorsteuer_betrag", "ust_sonderfall", "kategorie_id"}
+            for _tabelle160 in ("journal", "vorsteuer_ansprueche"):
+                _spalten160 = {r[1] for r in conn.execute(text(f"PRAGMA table_info({_tabelle160})")).fetchall()}
+                if not _benoetigt160.issubset(_spalten160):
+                    continue  # sehr alte/synthetische Zwischenstaende ohne diese Spalten ueberspringen
+                _betroffene160 = conn.execute(text(f"""
+                    SELECT t.id, t.netto_betrag, k.ust_satz_standard
+                    FROM {_tabelle160} t
+                    JOIN kategorien k ON k.id = t.kategorie_id
+                    WHERE t.ust_sonderfall IN ('13b_abs1', '13b_abs2')
+                    AND t.ust_satz = 0 AND t.ust_betrag = 0 AND t.vorsteuer_betrag = 0
+                    AND k.ust_satz_standard > 0
+                """)).fetchall()
+                for _id160, _netto160, _satz160 in _betroffene160:
+                    _neuer_ust160 = (_Dec160(str(_netto160)) * _Dec160(_satz160) / 100).quantize(_Dec160("0.01"))
+                    conn.execute(
+                        text(f"""
+                            UPDATE {_tabelle160}
+                            SET ust_satz = :satz, ust_betrag = :ust, vorsteuer_betrag = :ust
+                            WHERE id = :id
+                        """),
+                        {"satz": _satz160, "ust": str(_neuer_ust160), "id": _id160},
+                    )
+                    for _feld160, _neu160 in (("ust_satz", _satz160), ("ust_betrag", str(_neuer_ust160)), ("vorsteuer_betrag", str(_neuer_ust160))):
+                        protokolliere_aenderung(
+                            conn, tabelle=_tabelle160, datensatz_id=_id160, feld=_feld160,
+                            alter_wert=0, neuer_wert=_neu160,
+                            migration_version=160, grund=_grund160,
+                        )
+                if _betroffene160:
+                    print(f"[Migration] {len(_betroffene160)} Alt-Buchung(en) in {_tabelle160} auf USt/Vorsteuer nachberechnet (Issue #372)")
+
+            conn.execute(text("PRAGMA user_version = 160"))
+            conn.commit()
+            print("[Migration] Schema auf Version 160 (Issue #372: §13b-Alt-Buchungen USt/Vorsteuer nachberechnet)")
 
 
 def _migrate_kategorien() -> None:

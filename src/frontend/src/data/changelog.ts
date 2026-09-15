@@ -28,6 +28,7 @@ export const CHANGELOG: ChangelogVersion[] = [
     eintraege: [
       { typ: 'neu', text: 'Kontokorrent-Übersicht: zusätzlicher Filter nach Kunden/Lieferanten, neben dem bestehenden Alle/Offen/Guthaben-Filter. Vorschlag aus der Community (Issue #393).' },
       { typ: 'fix', text: 'UStVA-Anzeigehilfe: Bei §13b-Alt-Buchungen aus der Zeit vor der Reverse-Charge-Erkennung fehlten trotz nachgetragenem Kennzeichen weiterhin die USt- und Vorsteuerbeträge in KZ 46/47 bzw. 84/85/67 – sie standen dort schlicht auf 0, weil die additive Berechnung beim ursprünglichen Erfassen noch nicht existierte. Werden jetzt aus dem unveränderten Zahlbetrag nachberechnet (19 %), ohne den tatsächlich an den Lieferanten gezahlten Betrag zu verändern. Danke an UweKoslowski für die sehr genaue Nachprüfung (Issue #372).' },
+      { typ: 'fix', text: 'Der allererste Druckvorgang einer Rechnung bekam beim Speichern über den PDF-Betrachter im Druckfenster fälschlich schon den KOPIE-Stempel, statt als echtes Original zu gelten – der Speichern-Button des Betrachters fragt die Rechnung technisch bedingt ein zweites Mal ab, nachdem das Original durch die erste Anzeige bereits archiviert wurde. Danke an duczz für den Screen-Recording-Report (Issue #394).' },
     ],
   },
   {

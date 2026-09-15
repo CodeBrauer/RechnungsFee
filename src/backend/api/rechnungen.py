@@ -9,7 +9,7 @@ import json
 import re
 import shutil
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import List, Optional
@@ -1934,7 +1934,17 @@ def rechnung_als_pdf(rechnung_id: int, vorlage: int = -1, download: bool = False
         # Kein archiviertes Original mehr auffindbar (Datei gelöscht o.ä.) → wie bisher frisch generieren.
 
     # Kopie: Original bereits gespeichert → gespeichertes PDF + Wasserzeichen zurückgeben
-    if darf_archiviert and rechnung.original_pdf_pfad:
+    # Ausnahme (Issue #394): liegt das Archivieren nur Sekunden zurück, ist diese Anfrage mit
+    # hoher Wahrscheinlichkeit noch derselbe Druckvorgang, nicht ein echtes zweites Drucken -
+    # openInPdfWindow() (client.ts) navigiert das Tauri-Fenster direkt auf diese Backend-URL,
+    # und der native PDF-Viewer darin fragt beim Klick auf seinen eigenen Speichern-Button
+    # dieselbe URL ein zweites Mal ab. Die erste Anfrage hat das Original da bereits archiviert -
+    # ohne diese Gnadenfrist bekäme der allererste Speichervorgang fälschlich den KOPIE-Stempel.
+    _gerade_erst_archiviert = (
+        rechnung.ausgegeben_am is not None
+        and datetime.now() - rechnung.ausgegeben_am < timedelta(seconds=30)
+    )
+    if darf_archiviert and rechnung.original_pdf_pfad and not _gerade_erst_archiviert:
         kopie_bytes = lade_original_mit_kopie_stempel(APP_DATA_DIR, rechnung.original_pdf_pfad)
         if kopie_bytes:
             _dt_datei = _dok_typ

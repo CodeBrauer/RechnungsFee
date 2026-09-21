@@ -93,13 +93,14 @@ function berechneGesamt(positionen: PositionEntwurf[], modus: EingabeModus) {
 // ---------------------------------------------------------------------------
 
 function PositionenTabelle({
-  positionen, onChange, ustSaetze, onArtikelWahl, eingabeModus,
+  positionen, onChange, ustSaetze, onArtikelWahl, eingabeModus, sperreUstAufNull = false,
 }: {
   positionen: PositionEntwurf[]
   onChange: (p: PositionEntwurf[]) => void
   ustSaetze: { satz: string }[]
   onArtikelWahl: (i: number, a: ArtikelSuche) => void
   eingabeModus: EingabeModus
+  sperreUstAufNull?: boolean
 }) {
   function update(i: number, field: keyof PositionEntwurf, val: string | number | null) {
     onChange(positionen.map((p, idx) => idx === i ? { ...p, [field]: val } : p))
@@ -158,10 +159,15 @@ function PositionenTabelle({
               </td>
               <td className="px-2 py-1.5">
                 <select value={pos.ust_satz} onChange={e => update(i, 'ust_satz', e.target.value)}
-                  className={`${cellInput} text-right`}>
-                  {ustSaetze.map(u => (
-                    <option key={u.satz} value={u.satz}>{u.satz} %</option>
-                  ))}
+                  disabled={sperreUstAufNull}
+                  className={`${cellInput} text-right disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed`}>
+                  {sperreUstAufNull ? (
+                    <option value="0">0 % (§19)</option>
+                  ) : (
+                    ustSaetze.map(u => (
+                      <option key={u.satz} value={u.satz}>{u.satz} %</option>
+                    ))
+                  )}
                 </select>
               </td>
               <td className="px-2 py-1.5 text-center">
@@ -231,11 +237,18 @@ function VorlageFormular({
 }) {
   const { data: kunden } = useQuery({ queryKey: ['kunden'], queryFn: getKunden })
   const { data: ustSaetze } = useQuery({ queryKey: ['ust-saetze'], queryFn: getUstSaetze })
+  const { data: unternehmen } = useQuery({ queryKey: ['unternehmen'], queryFn: getUnternehmen })
+  // §19 UStG: wiederkehrende Rechnungen sind immer Ausgangsrechnungen (typ="ausgang" in
+  // api/wiederkehrend.py::_erstelle_entwurf()) - wie bei Angebot/Auftrag/Proforma/Rechnung
+  // darf hier nie mit einem echten USt-Satz gerechnet werden (Issue #400).
+  const istKleinunternehmer = unternehmen?.ist_kleinunternehmer ?? false
 
   const ustSaetzeListe = ustSaetze?.filter(u => u.ist_aktiv) ?? []
-  const defaultSatz = ustSaetze?.find(u => u.ist_default)?.satz
-    ?? ustSaetze?.find(u => parseFloat(u.satz) === 19)?.satz
-    ?? '19'
+  const defaultSatz = istKleinunternehmer
+    ? '0'
+    : (ustSaetze?.find(u => u.ist_default)?.satz
+        ?? ustSaetze?.find(u => parseFloat(u.satz) === 19)?.satz
+        ?? '19')
 
   const [bezeichnung, setBezeichnung] = useState(() => {
     if (initial?.bezeichnung) return initial.bezeichnung
@@ -302,7 +315,9 @@ function VorlageFormular({
   }, [ustSaetze])
 
   function fillPositionFromArtikel(i: number, a: ArtikelSuche) {
-    const ust_satz = ustSaetze?.find(u => parseFloat(u.satz) === parseFloat(a.steuersatz))?.satz ?? a.steuersatz
+    const ust_satz = istKleinunternehmer
+      ? '0'
+      : (ustSaetze?.find(u => parseFloat(u.satz) === parseFloat(a.steuersatz))?.satz ?? a.steuersatz)
     // Weder vk_netto noch vk_brutto auf 2 Nachkommastellen runden (Issue #332/#344) - je nachdem
     // welcher der beiden Preise beim Artikel die eingegebene Wahrheit war, ist der jeweils andere
     // nur mit 4 Nachkommastellen exakt reproduzierbar (sonst weicht eine Netto-Rechnung von einer
@@ -465,11 +480,13 @@ function VorlageFormular({
         <div className="flex items-center justify-between mb-2">
           <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Positionen</label>
           <div className="flex items-center gap-3">
-            <button type="button"
-              onClick={() => setEingabeModus(eingabeModus === 'netto' ? 'brutto' : 'netto')}
-              className="text-xs text-blue-600 hover:text-blue-700 underline">
-              {eingabeModus === 'netto' ? 'Brutto eingeben' : 'Netto eingeben'}
-            </button>
+            {!istKleinunternehmer && (
+              <button type="button"
+                onClick={() => setEingabeModus(eingabeModus === 'netto' ? 'brutto' : 'netto')}
+                className="text-xs text-blue-600 hover:text-blue-700 underline">
+                {eingabeModus === 'netto' ? 'Brutto eingeben' : 'Netto eingeben'}
+              </button>
+            )}
             <button type="button"
               onClick={() => setPositionen(prev => [...prev, leerPosition(defaultSatz)])}
               className="text-xs text-blue-600 hover:text-blue-700 font-medium">
@@ -483,6 +500,7 @@ function VorlageFormular({
           ustSaetze={ustSaetzeListe}
           onArtikelWahl={fillPositionFromArtikel}
           eingabeModus={eingabeModus}
+          sperreUstAufNull={istKleinunternehmer}
         />
       </div>
 

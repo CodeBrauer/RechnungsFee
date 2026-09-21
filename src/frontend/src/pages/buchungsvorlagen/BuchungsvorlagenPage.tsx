@@ -10,7 +10,7 @@ import {
   uploadBuchungsvorlageBeleg, deleteBuchungsvorlageBeleg,
   uploadJournalAnhangVorab,
   analysiereRechnung,
-  getKategorien, getLieferanten, getKonten,
+  getKategorien, getLieferanten, getKonten, getUnternehmen,
   type Buchungsvorlage, type BuchungsvorlageCreate, type AnalyseErgebnis,
 } from '../../api/client'
 import { LieferantErstellenModal } from '../../components/LieferantErstellenModal'
@@ -121,6 +121,12 @@ function VorlageFormular({
   const qc = useQueryClient()
   const [form, setForm] = useState<FormData>(initial ? fromVorlage(initial) : leereForm())
   const [showNeuLieferant, setShowNeuLieferant] = useState(false)
+  const { data: unternehmen } = useQuery({ queryKey: ['unternehmen'], queryFn: getUnternehmen })
+  // §19 UStG betrifft nur die eigenen Einnahmen (keine USt auf eigene Umsätze) - bei einer
+  // Ausgabe (z.B. Miete) bleibt der reale USt-Satz des Vermieters/Lieferanten erlaubt, nur der
+  // Vorsteuerabzug entfällt serverseitig (Issue #400-Folgefund).
+  const istKleinunternehmer = unternehmen?.ist_kleinunternehmer ?? false
+  const sperreUstAufNull = istKleinunternehmer && form.art === 'Einnahme'
 
   const set = (k: keyof FormData, v: unknown) => setForm(f => ({ ...f, [k]: v }))
 
@@ -134,6 +140,7 @@ function VorlageFormular({
       art: neu,
       kategorie_id: null,
       modus: neu === 'Einnahme' ? 'direkt' : f.modus,
+      ust_satz: (istKleinunternehmer && neu === 'Einnahme') ? '0' : f.ust_satz,
     }))
   }
 
@@ -147,7 +154,7 @@ function VorlageFormular({
       konto_id: form.konto_id,
       betrag: form.betrag,
       ist_brutto: form.ist_brutto,
-      ust_satz: form.ust_satz,
+      ust_satz: sperreUstAufNull ? '0' : form.ust_satz,
       intervall: form.intervall,
       naechstes_datum: form.naechstes_datum,
       aktiv: form.aktiv,
@@ -249,10 +256,18 @@ function VorlageFormular({
         </div>
         <div>
           <label className="block text-sm font-medium text-slate-700 dark:text-slate-200 mb-1">USt-Satz (%)</label>
-          <select value={form.ust_satz} onChange={e => set('ust_satz', e.target.value)} className={selectCls}>
-            <option value="0">0 %</option>
-            <option value="7">7 %</option>
-            <option value="19">19 %</option>
+          <select value={form.ust_satz} onChange={e => set('ust_satz', e.target.value)}
+            disabled={sperreUstAufNull}
+            className={selectCls + (sperreUstAufNull ? ' opacity-50 cursor-not-allowed' : '')}>
+            {sperreUstAufNull ? (
+              <option value="0">0 % (§19)</option>
+            ) : (
+              <>
+                <option value="0">0 %</option>
+                <option value="7">7 %</option>
+                <option value="19">19 %</option>
+              </>
+            )}
           </select>
         </div>
         <div className="flex items-end pb-1">

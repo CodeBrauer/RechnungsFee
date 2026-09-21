@@ -257,26 +257,40 @@ def buche_vorlage(vorlage_id: int, data: BuchenRequest = BuchenRequest(), db: Se
     if v.modus != "direkt":
         raise HTTPException(422, "Nur Direkt-Vorlagen können direkt gebucht werden")
 
+    unternehmen = db.query(Unternehmen).first()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer)
+
     heute = date.today()
     faellig_am = v.naechstes_datum  # tatsaechliches Datum der Buchung - kann in der Vergangenheit liegen
     kat = db.query(Kategorie).filter(Kategorie.id == v.kategorie_id).first() if v.kategorie_id else None
     art = v.art if v.art else "Ausgabe"
 
+    # §19 UStG (Issue #400-Folgefund, analog zu Issue #397): bei einer Einnahme darf ein
+    # Kleinunternehmer nie USt auf den eigenen Umsatz ausweisen - bei einer Ausgabe (z.B. Miete)
+    # bleibt der reale USt-Satz des Lieferanten/Vermieters dagegen erhalten, hier entfaellt nur
+    # der Vorsteuerabzug weiter unten. Diese Funktion baut den Journaleintrag direkt, ohne ueber
+    # journal.py::_felder_aus_data() zu laufen, das die §19-Sperre schon kennt - v.ust_satz wurde
+    # bislang ungeprueft uebernommen.
+    ust_satz_effektiv = Decimal("0") if (ist_kleinunternehmer and art == "Einnahme") else v.ust_satz
+
     # Betrag: brutto oder netto → immer als brutto speichern
-    brutto = v.betrag if v.ist_brutto else (v.betrag * (1 + v.ust_satz / 100)).quantize(Q, ROUND_HALF_UP)
-    netto, ust_betrag = _berechne_ust(brutto, v.ust_satz)
+    brutto = v.betrag if v.ist_brutto else (v.betrag * (1 + ust_satz_effektiv / 100)).quantize(Q, ROUND_HALF_UP)
+    netto, ust_betrag = _berechne_ust(brutto, ust_satz_effektiv)
 
     if art == "Einnahme":
         vorsteuerabzug_flag = False
         vorsteuer = Decimal("0")
     else:
         ist_privat = kat.kontenart == "Privat" if kat else False
-        vorsteuerabzug_flag = bool(v.ust_satz > 0 and not ist_privat)
+        # "and not ist_kleinunternehmer": ohne diese Sperre wuerde ein Kleinunternehmer, der z.B.
+        # seine Miete ueber eine Vorlage bucht, bei jedem Ausfuehren automatisch einen echten
+        # (unzulaessigen) Vorsteuerabzug gutgeschrieben bekommen - §19 UStG schliesst das aus.
+        vorsteuerabzug_flag = bool(ust_satz_effektiv > 0 and not ist_privat and not ist_kleinunternehmer)
         vorsteuer = _berechne_vorsteuer(ust_betrag, vorsteuerabzug_flag, kat)
 
     konto_skr03 = kat.konto_skr03 if kat else None
     konto_skr04 = kat.konto_skr04 if kat else None
-    konto_ust_skr03, konto_ust_skr04 = _ust_konto(art, v.ust_satz)
+    konto_ust_skr03, konto_ust_skr04 = _ust_konto(art, ust_satz_effektiv)
 
     belegnr = _naechste_belegnr(db, faellig_am)
     eintrag = Journaleintrag(
@@ -288,14 +302,15 @@ def buche_vorlage(vorlage_id: int, data: BuchenRequest = BuchenRequest(), db: Se
         art=art,
         brutto_betrag=brutto,
         netto_betrag=netto,
-        ust_satz=v.ust_satz,
+        ust_satz=ust_satz_effektiv,
         ust_betrag=ust_betrag,
         vorsteuer_betrag=vorsteuer,
         vorsteuerabzug=vorsteuerabzug_flag,
         konto_skr03=konto_skr03,
         konto_skr04=konto_skr04,
-        konto_ust_skr03=konto_ust_skr03 if v.ust_satz > 0 else None,
-        konto_ust_skr04=konto_ust_skr04 if v.ust_satz > 0 else None,
+        konto_ust_skr03=konto_ust_skr03 if ust_satz_effektiv > 0 else None,
+        konto_ust_skr04=konto_ust_skr04 if ust_satz_effektiv > 0 else None,
+        steuerbefreiung_grund="§19 UStG" if ist_kleinunternehmer else None,
         buchungsvorlage_id=v.id,
         beleg_id=data.beleg_id,
         immutable=True,

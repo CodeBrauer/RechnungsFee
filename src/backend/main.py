@@ -33,7 +33,7 @@ logging.root.addHandler(_log_handler)
 from database.seed import run_all_seeds
 from api import unternehmen, konten, kategorien, setup, journal, kunden, lieferanten, tagesabschluss, nummernkreise, export, rechnungen, backup, artikel, artikel_gruppen, ust_saetze, pdf_vorlagen, eks, system, ustva, zm, euer, dokumentenpakete, mail, wiederkehrend, buchungsvorlagen, anlageverzeichnis, datev, anlage_s, anlage_g, fristen_api, guv, bank_templates, bank_import, auto_filter, forderungen, cockpit, datenmigration, kontenuebersicht, schnellbuchungen, mahnwesen, profile, kontokorrent, inventurliste
 
-SCHEMA_VERSION = 160
+SCHEMA_VERSION = 161
 
 app = FastAPI(title="RechnungsFee API", version="0.1.0")
 
@@ -3512,6 +3512,88 @@ def _run_migrations() -> None:
             conn.execute(text("PRAGMA user_version = 160"))
             conn.commit()
             print("[Migration] Schema auf Version 160 (Issue #372: §13b-Alt-Buchungen USt/Vorsteuer nachberechnet)")
+
+        if version < 161:
+            # Issue #400-Folgefund: buche_vorlage() (Buchungsvorlagen - "Wiederkehrende Buchung"
+            # fuer Miete/Leasing/Abonnements im Kassenbuch) baut den Journal-Eintrag direkt, ohne
+            # ueber journal.py::_felder_aus_data() zu laufen - kannte den Kleinunternehmerstatus
+            # bislang nicht. Bei einer Ausgabe (z.B. Miete) wurde der Vorsteuerabzug rein aus
+            # ust_satz > 0 abgeleitet, bei einer Einnahme blieb ein (ggf. versehentlich) gesetzter
+            # USt-Satz unveraendert stehen - beides fuer einen Kleinunternehmer unzulaessig (§19
+            # UStG). Kein reines Anzeigeproblem: journal.vorsteuer_betrag fliesst direkt in
+            # EUER-Zeile 57 (abziehbare Vorsteuer) ein (euer.py) und diese Zeilen sind seit
+            # Erstellung GoBD-unveraenderlich, ein nachtraegliches manuelles Korrigieren war nicht
+            # moeglich. Betrifft ausschliesslich ueber Buchungsvorlagen erzeugte Zeilen
+            # (journal.buchungsvorlage_id IS NOT NULL) - manuelle Journal-Buchungen liefen schon
+            # immer ueber _felder_aus_data(), das die §19-Sperre kennt.
+            from utils.aenderungsprotokoll import protokolliere_aenderung
+
+            # ist_kleinunternehmer wurde nie per ALTER TABLE versioniert ergaenzt (Teil des
+            # Basis-Schemas seit den ersten Releases) - auf einer sehr alten DB, die noch vor
+            # Einfuehrung des Versionierungssystems (Migration 1→2) angelegt wurde, koennte die
+            # Spalte theoretisch fehlen. Defensiv wie jede andere Migration hier zuerst pruefen.
+            _unt_spalten161 = {r[1] for r in conn.execute(text("PRAGMA table_info(unternehmen)")).fetchall()}
+            _ist_ku161 = False
+            if "ist_kleinunternehmer" in _unt_spalten161:
+                _ist_ku161 = conn.execute(text("SELECT ist_kleinunternehmer FROM unternehmen LIMIT 1")).scalar()
+
+            if _ist_ku161:
+                _grund161 = "Issue #400-Folgefund: Buchungsvorlagen-Journaleintrag auf §19 UStG korrigiert"
+
+                # Ausgabe (z.B. Miete): Vorsteuerabzug faelschlich gewaehrt. Zahlbetrag/USt-Satz/
+                # -Betrag bleiben unangetastet - die spiegeln den realen, tatsaechlich vom
+                # Vermieter/Lieferanten ausgewiesenen Betrag korrekt wider, nur der Abzug selbst
+                # war unzulaessig.
+                _betroffene161a = conn.execute(text("""
+                    SELECT id, vorsteuer_betrag FROM journal
+                    WHERE buchungsvorlage_id IS NOT NULL AND art = 'Ausgabe'
+                    AND (vorsteuerabzug = 1 OR (vorsteuer_betrag IS NOT NULL AND vorsteuer_betrag != 0))
+                """)).fetchall()
+                for _id161a, _alt161a in _betroffene161a:
+                    conn.execute(
+                        text("UPDATE journal SET vorsteuerabzug = 0, vorsteuer_betrag = 0 WHERE id = :id"),
+                        {"id": _id161a},
+                    )
+                    protokolliere_aenderung(
+                        conn, tabelle="journal", datensatz_id=_id161a, feld="vorsteuer_betrag",
+                        alter_wert=_alt161a, neuer_wert=0, migration_version=161, grund=_grund161,
+                    )
+                if _betroffene161a:
+                    print(f"[Migration] {len(_betroffene161a)} Buchungsvorlagen-Ausgabe(n) in journal: Vorsteuerabzug zurueckgenommen (Issue #400)")
+
+                # Einnahme (z.B. Abo-Erloes): USt-Satz faelschlich > 0 - fuer einen Kleinunter-
+                # nehmer darf auf eigene Einnahmen nie USt anfallen. Der geflossene Bruttobetrag
+                # bleibt unangetastet, netto_betrag wird darauf angeglichen (Netto=Brutto bei 0%).
+                _betroffene161b = conn.execute(text("""
+                    SELECT id, netto_betrag, ust_satz, ust_betrag, brutto_betrag FROM journal
+                    WHERE buchungsvorlage_id IS NOT NULL AND art = 'Einnahme'
+                    AND ust_satz IS NOT NULL AND ust_satz != 0
+                """)).fetchall()
+                for _id161b, _netto161b, _satz161b, _ust161b, _brutto161b in _betroffene161b:
+                    conn.execute(
+                        text("""
+                            UPDATE journal
+                            SET netto_betrag = :brutto, ust_satz = 0, ust_betrag = 0,
+                                konto_ust_skr03 = NULL, konto_ust_skr04 = NULL
+                            WHERE id = :id
+                        """),
+                        {"brutto": _brutto161b, "id": _id161b},
+                    )
+                    for _feld161b, _alt161b, _neu161b in (
+                        ("netto_betrag", _netto161b, _brutto161b),
+                        ("ust_satz", _satz161b, 0),
+                        ("ust_betrag", _ust161b, 0),
+                    ):
+                        protokolliere_aenderung(
+                            conn, tabelle="journal", datensatz_id=_id161b, feld=_feld161b,
+                            alter_wert=_alt161b, neuer_wert=_neu161b, migration_version=161, grund=_grund161,
+                        )
+                if _betroffene161b:
+                    print(f"[Migration] {len(_betroffene161b)} Buchungsvorlagen-Einnahme(n) in journal: USt zurueckgenommen (Issue #400)")
+
+            conn.execute(text("PRAGMA user_version = 161"))
+            conn.commit()
+            print("[Migration] Schema auf Version 161 (Issue #400-Folgefund: Buchungsvorlagen §19 UStG korrigiert)")
 
 
 def _migrate_kategorien() -> None:

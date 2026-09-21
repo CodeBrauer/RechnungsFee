@@ -36,7 +36,8 @@ def test_bestehende_jjnnnn_formate_werden_korrigiert(tmp_path, monkeypatch):
             ("auftrag", "Aufträge", "AU-JJNNNN"),
             ("proforma", "Proforma-Rechnungen", "PRF-JJNNNN"),
             ("stornorechnung", "Stornorechnungen", "STORNO-JJNNNN"),
-            # unveraendertes, individuell abweichendes Format bleibt unangetastet
+            # noch am alten Auslieferungszustand "YY####" - wird ab Migration 162 (Issue #399)
+            # zusaetzlich auf "RE-YY####" gehoben, siehe Assertion unten.
             ("rechnung_ausgang", "Ausgangsrechnungen", "YY####"),
         ],
     )
@@ -53,7 +54,7 @@ def test_bestehende_jjnnnn_formate_werden_korrigiert(tmp_path, monkeypatch):
     assert formate["auftrag"] == "AU-YY####"
     assert formate["proforma"] == "PRF-YY####"
     assert formate["stornorechnung"] == "STORNO-YY####"
-    assert formate["rechnung_ausgang"] == "YY####"
+    assert formate["rechnung_ausgang"] == "RE-YY####"  # Migration 162, Issue #399
     assert main.SCHEMA_VERSION >= 152
 
 

@@ -32,6 +32,7 @@ from database.models import (
     Unternehmen,
 )
 from api.rechnungen import APP_DATA_DIR, BELEG_DIR, ERLAUBTE_MIME_TYPES
+from api.nummernkreise import naechste_nummer
 
 router = APIRouter(prefix="/api/wiederkehrend", tags=["Wiederkehrend"])
 
@@ -147,25 +148,24 @@ def _naechstes_datum(von: date, intervall: str) -> date:
     return von
 
 
-def _belegnr_aus_format(fmt: str, datum: date, nr: int) -> str:
-    s = fmt.replace("YYYY", str(datum.year)).replace("YY", str(datum.year)[-2:])
-    stellen = s.count("#")
-    if stellen:
-        s = s.replace("#" * stellen, str(nr).zfill(stellen))
-    return s
-
-
 def _naechste_rechnungsnr(datum: date, db: Session) -> str:
-    nk = db.query(Nummernkreis).filter(Nummernkreis.typ == "rechnung_ausgang").first()
-    if nk:
-        if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != datum.year:
-            nk.naechste_nr = 1
-        nk.letztes_jahr = datum.year
-        nr = nk.naechste_nr
-        nk.naechste_nr += 1
-        return f"RE-{_belegnr_aus_format(nk.format, datum, nr)}"
+    """Nummer für eine aus einer Wiederkehrenden Vorlage erzeugte Ausgangsrechnung.
+
+    Nutzt standardmäßig denselben Nummernkreis wie normale Ausgangsrechnungen
+    (rechnung_ausgang) - ein eigener Kreis (rechnung_wiederkehrend) wird nur verwendet, wenn
+    er in den Nummernkreis-Einstellungen aktiv geschaltet wurde (Issue #399, Wunsch 2: eigene
+    Nummernserie für wiederkehrende Rechnungen, ohne die normale Rechnungsfolge zu stören).
+    Kein hartcodierter "RE-"-Präfix mehr - das am jeweiligen Nummernkreis hinterlegte Format
+    bestimmt die Nummer vollständig (Issue #399, Wunsch 1)."""
+    eigener_kreis_aktiv = db.query(Nummernkreis).filter(
+        Nummernkreis.typ == "rechnung_wiederkehrend", Nummernkreis.aktiv == True,  # noqa: E712
+    ).first() is not None
+    typ = "rechnung_wiederkehrend" if eigener_kreis_aktiv else "rechnung_ausgang"
+    nr = naechste_nummer(typ, db, datum)
+    if nr:
+        return nr
     count = db.query(Rechnung).filter(Rechnung.typ == "ausgang").count()
-    return f"RE-{str(datum.year)[-2:]}{count + 1:04d}"
+    return f"{str(datum.year)[-2:]}{count + 1:04d}"
 
 
 def _kunde_name(vorlage: Rechnungsvorlage) -> Optional[str]:

@@ -42,6 +42,7 @@ from .schemas_rechnungen import (
     RechnungVorschauRequest, RechnungVorschauResponse, RechnungVorschauPosition,
 )
 from .schemas import StornoRequest
+from .nummernkreise import naechste_nummer
 
 BELEG_DIR = APP_DATA_DIR / "uploads" / "belege"
 TEMP_DIR = APP_DATA_DIR / "uploads" / "tmp"
@@ -54,28 +55,7 @@ router = APIRouter(prefix="/api/rechnungen", tags=["Rechnungen"])
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-import re as _re
-
-
-def _belegnr_aus_format(format_str: str, datum: date, nr: int) -> str:
-    year_4 = str(datum.year)
-    year_2 = year_4[-2:]
-    month  = f"{datum.month:02d}"
-    day    = f"{datum.day:02d}"
-    result = (format_str
-              .replace("YYYY", year_4)
-              .replace("JJJJ", year_4)  # dt. Alias
-              .replace("YY",   year_2)
-              .replace("JJ",   year_2)  # dt. Alias: Jahr
-              .replace("MM",   month)
-              .replace("TT",   day))
-
-    def _pad(m: _re.Match) -> str:
-        return str(nr).zfill(len(m.group()))
-
-    result = _re.sub(r"#+", _pad, result)
-    result = _re.sub(r"NN+", _pad, result)  # dt. Alias: Nummer (mind. 2 N, damit einzelne Buchstaben in Präfixen nicht ersetzt werden)
-    return result
+from utils.belegnummer import belegnr_aus_format as _belegnr_aus_format
 
 
 def _fmt_menge(n: Decimal) -> str:
@@ -1338,20 +1318,15 @@ def create_rechnung(data: RechnungCreate, db: Session = Depends(get_db)):
                 rechnungsnummer = _naechste_proformanummer(data.datum, db)
             # else: Entwurf-Proforma ohne Nummer (wie Angebot-Entwurf)
         else:
+            # Kein hartcodierter "RE-"/"ER-"-Präfix mehr - das am Nummernkreis hinterlegte
+            # Format bestimmt die Nummer vollständig (Issue #399, Wunsch 1). Bestandsinstallationen
+            # werden per Migration von "YY####" auf "RE-YY####"/"ER-YY####" gehoben, damit sich
+            # am sichtbaren Ergebnis nichts ändert, bis jemand das Format bewusst anpasst.
             nk_typ = "rechnung_ausgang" if data.typ == "ausgang" else "rechnung_eingang"
-            nk = db.query(Nummernkreis).filter(Nummernkreis.typ == nk_typ).first()
-            if nk:
-                if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != data.datum.year:
-                    nk.naechste_nr = 1
-                nk.letztes_jahr = data.datum.year
-                nr = nk.naechste_nr
-                nk.naechste_nr += 1
-                prefix = "RE" if data.typ == "ausgang" else "ER"
-                rechnungsnummer = f"{prefix}-{_belegnr_aus_format(nk.format, data.datum, nr)}"
-            else:
+            rechnungsnummer = naechste_nummer(nk_typ, db, data.datum)
+            if not rechnungsnummer:
                 count = db.query(Rechnung).filter(Rechnung.typ == data.typ).count()
-                prefix = "RE" if data.typ == "ausgang" else "ER"
-                rechnungsnummer = f"{prefix}-{str(data.datum.year)[-2:]}{count + 1:04d}"
+                rechnungsnummer = f"{str(data.datum.year)[-2:]}{count + 1:04d}"
 
     # Proforma: faellig_am aus Unternehmens-Standard wenn nicht übergeben; kein Skonto
     proforma_faellig_am = data.faellig_am
@@ -4009,16 +3984,14 @@ def _naechste_lieferscheinnummer(datum: date, db: Session) -> str:
 
 
 def _naechste_rechnungsnummer(datum: date, db: Session) -> str:
-    nk = db.query(Nummernkreis).filter(Nummernkreis.typ == "rechnung_ausgang").first()
-    if nk:
-        if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != datum.year:
-            nk.naechste_nr = 1
-        nk.letztes_jahr = datum.year
-        nr = nk.naechste_nr
-        nk.naechste_nr += 1
-        return f"RE-{_belegnr_aus_format(nk.format, datum, nr)}"
+    """Rechnungsnummer für aus Lieferschein/Angebot/Auftrag/Proforma konvertierte bzw. für
+    Ersatzrechnungen. Kein hartcodierter "RE-"-Präfix mehr, das Nummernkreis-Format entscheidet
+    vollständig (Issue #399, Wunsch 1)."""
+    rechnungsnummer = naechste_nummer("rechnung_ausgang", db, datum)
+    if rechnungsnummer:
+        return rechnungsnummer
     count = db.query(Rechnung).filter(Rechnung.typ == "ausgang", Rechnung.dokument_typ == "Rechnung").count()
-    return f"RE-{str(datum.year)[-2:]}{count + 1:04d}"
+    return f"{str(datum.year)[-2:]}{count + 1:04d}"
 
 
 @router.post("/{ls_id}/rechnung-erstellen", response_model=RechnungResponse, status_code=201)

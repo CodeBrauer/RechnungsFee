@@ -33,7 +33,7 @@ logging.root.addHandler(_log_handler)
 from database.seed import run_all_seeds
 from api import unternehmen, konten, kategorien, setup, journal, kunden, lieferanten, tagesabschluss, nummernkreise, export, rechnungen, backup, artikel, artikel_gruppen, ust_saetze, pdf_vorlagen, eks, system, ustva, zm, euer, dokumentenpakete, mail, wiederkehrend, buchungsvorlagen, anlageverzeichnis, datev, anlage_s, anlage_g, fristen_api, guv, bank_templates, bank_import, auto_filter, forderungen, cockpit, datenmigration, kontenuebersicht, schnellbuchungen, mahnwesen, profile, kontokorrent, inventurliste
 
-SCHEMA_VERSION = 161
+SCHEMA_VERSION = 162
 
 app = FastAPI(title="RechnungsFee API", version="0.1.0")
 
@@ -3594,6 +3594,30 @@ def _run_migrations() -> None:
             conn.execute(text("PRAGMA user_version = 161"))
             conn.commit()
             print("[Migration] Schema auf Version 161 (Issue #400-Folgefund: Buchungsvorlagen §19 UStG korrigiert)")
+
+        if version < 162:
+            # Issue #399 Wunsch 1: der "RE-"/"ER-"-Praefix vor Ausgangs-/Eingangsrechnungs-
+            # nummern stand bislang fest im Code (rechnungen.py/wiederkehrend.py), nicht im
+            # frei konfigurierbaren Nummernkreis-Format - eine eigene Rechnungsnummern-
+            # Konvention (z.B. "R###-YYYY") wurde dadurch immer zu "RE-R###-YYYY" verfaelscht.
+            # Der Code haengt jetzt keinen Praefix mehr an, das Format entscheidet allein.
+            # Nur Nummernkreise, die noch exakt auf dem alten Auslieferungszustand "YY####"
+            # stehen, werden hier auf "RE-YY####"/"ER-YY####" gehoben - damit aendert sich fuer
+            # alle, die das Format nie angepasst haben, am sichtbaren Ergebnis nichts. Wer das
+            # Format bereits selbst angepasst hatte (format != "YY####"), wird NICHT angefasst -
+            # sonst wuerde genau der in Issue #399 beschriebene Fehler hier erneut entstehen
+            # (eigenes Format zusaetzlich mit RE- verfaelscht statt entfaelscht).
+            conn.execute(text("""
+                UPDATE nummernkreise SET format = 'RE-YY####'
+                WHERE typ = 'rechnung_ausgang' AND format = 'YY####'
+            """))
+            conn.execute(text("""
+                UPDATE nummernkreise SET format = 'ER-YY####'
+                WHERE typ = 'rechnung_eingang' AND format = 'YY####'
+            """))
+            conn.execute(text("PRAGMA user_version = 162"))
+            conn.commit()
+            print("[Migration] Schema auf Version 162 (Issue #399: RE-/ER-Praefix aus Code ins Nummernkreis-Format gehoben)")
 
 
 def _migrate_kategorien() -> None:

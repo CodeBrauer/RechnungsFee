@@ -38,29 +38,7 @@ ERLAUBTE_MIME_TYPES = {"application/pdf", "image/jpeg", "image/png", "image/tiff
 router = APIRouter(prefix="/api/journal", tags=["Journal"])
 
 
-import re as _re
-
-
-def _belegnr_aus_format(format_str: str, datum: date, nr: int) -> str:
-    """Wendet das Format-Template an. Y=Jahrsstelle, MM=Monat, TT=Tag, #=Nummernstelle.
-    Gross-/Kleinschreibung der Platzhalter wird nicht unterschieden (Nutzer-Feedback:
-    ein von Hand eingetipptes Format wie "RE-tt.mm.yyyy" in Kleinbuchstaben wurde bisher
-    gar nicht ersetzt, da die Suche nur exakt YYYY/YY/MM/TT in Grossbuchstaben fand - die
-    Rechnungsnummer erschien dann unveraendert als Format-Vorlage statt als echte Nummer).
-    Reihenfolge bleibt YYYY vor YY wichtig, sonst wuerde YYYY faelschlich als zwei YY erkannt."""
-    year_4 = str(datum.year)
-    year_2 = year_4[-2:]
-    month  = f"{datum.month:02d}"
-    day    = f"{datum.day:02d}"
-    result = _re.sub("YYYY", year_4, format_str, flags=_re.IGNORECASE)
-    result = _re.sub("YY",   year_2, result,     flags=_re.IGNORECASE)
-    result = _re.sub("MM",   month,  result,     flags=_re.IGNORECASE)
-    result = _re.sub("TT",   day,    result,     flags=_re.IGNORECASE)
-
-    def _pad(m: _re.Match) -> str:
-        return str(nr).zfill(len(m.group()))
-
-    return _re.sub(r"#+", _pad, result)
+from utils.belegnummer import belegnr_aus_format as _belegnr_aus_format
 
 
 def _storno_infos(db: Session, eintraege: list[Journaleintrag]) -> dict[int, dict]:

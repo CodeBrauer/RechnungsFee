@@ -10,23 +10,29 @@ from sqlalchemy.orm import Session
 
 from database.connection import get_db
 from database.models import Nummernkreis
-from .journal import _belegnr_aus_format
+from utils.belegnummer import belegnr_aus_format as _belegnr_aus_format
 from .schemas import NummernkreisUpdate, NummernkreisResponse
 
 
-def naechste_nummer(typ: str, db: Session) -> str | None:
+def naechste_nummer(typ: str, db: Session, datum: date | None = None) -> str | None:
     """Generiert die nächste Nummer für den angegebenen Nummernkreis-Typ.
-    Inkrementiert naechste_nr in-memory; der Aufrufer muss committen."""
+    Inkrementiert naechste_nr in-memory; der Aufrufer muss committen.
+
+    datum: Bezugsdatum für den Jahres-Rollover-Reset und die YYYY/YY/MM/TT-Platzhalter -
+    Default heute. Für rückdatierte Belege (z.B. eine Eingangsrechnung vom Vormonat) muss
+    das tatsächliche Belegdatum übergeben werden, sonst würde ein Jahreswechsel anhand des
+    falschen Datums erkannt (Issue #399-Konsolidierung: vorher hatte jeder Aufrufer sein
+    eigenes, dupliziertes Increment/Reset/Format hier hin- statt herzuzuschreiben)."""
     nk = db.query(Nummernkreis).filter(Nummernkreis.typ == typ).first()
     if not nk:
         return None
-    heute = date.today()
-    if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != heute.year:
+    bezug = datum or date.today()
+    if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != bezug.year:
         nk.naechste_nr = 1
-    nk.letztes_jahr = heute.year
+    nk.letztes_jahr = bezug.year
     nr = nk.naechste_nr
     nk.naechste_nr += 1
-    return _belegnr_aus_format(nk.format, heute, nr)
+    return _belegnr_aus_format(nk.format, bezug, nr)
 
 router = APIRouter(prefix="/api/nummernkreise", tags=["Stammdaten"])
 
@@ -64,6 +70,26 @@ def update_nummernkreis(nk_id: int, data: NummernkreisUpdate, db: Session = Depe
             detail=(
                 f"Die nächste Nummer darf nicht verringert werden (aktuell: {nk.naechste_nr}). "
                 "Eine Verringerung würde bereits vergebene Nummern erneut ausgeben."
+            ),
+        )
+    # Issue #399 Wunsch 2: der eigene Nummernkreis für wiederkehrende Rechnungen lässt sich
+    # nur deaktivieren, solange er noch nie eine Nummer vergeben hat (naechste_nr == 1) - ein
+    # Zurückschalten auf den gemeinsamen rechnung_ausgang-Kreis würde sonst später zu doppelt
+    # vergebenen Rechnungsnummern führen können, sobald beide Kreise irgendwann dieselbe
+    # laufende Nummer erreichen. Einschalten bleibt jederzeit möglich.
+    if (
+        nk.typ == "rechnung_wiederkehrend"
+        and data.aktiv is False
+        and nk.aktiv
+        and nk.naechste_nr > 1
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Kann nicht deaktiviert werden: Es wurden bereits {nk.naechste_nr - 1} Rechnung(en) "
+                "mit diesem eigenen Nummernkreis erstellt. Ein Zurückschalten auf den gemeinsamen "
+                "Nummernkreis der Ausgangsrechnungen würde später doppelt vergebene Rechnungsnummern "
+                "riskieren."
             ),
         )
     for key, value in data.model_dump(exclude_none=True).items():

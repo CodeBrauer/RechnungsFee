@@ -322,7 +322,13 @@ def _felder_aus_data(data: "JournalEintragCreate", db: Session) -> dict:
     steuerbefreiung_grund = None
 
     if unternehmen and unternehmen.ist_kleinunternehmer:
-        ust_satz = Decimal("0")
+        # §19 UStG betrifft nur die eigenen Einnahmen (keine USt auf eigene Umsätze) - bei
+        # einer Ausgabe ist der USt-Satz des Lieferanten real, nur der Vorsteuerabzug bleibt
+        # gesperrt (Issue #397). vorsteuerabzug wird serverseitig hart auf False erzwungen,
+        # unabhängig davon was das Frontend schickt (dort ist die Checkbox nur ausgeblendet).
+        if data.art == "Einnahme":
+            ust_satz = Decimal("0")
+        vorsteuerabzug = False
         steuerbefreiung_grund = "§19 UStG"
 
     kat = db.query(Kategorie).filter(Kategorie.id == data.kategorie_id).first() if data.kategorie_id else None
@@ -733,7 +739,10 @@ def create_split_buchung(data: SplitBuchungCreate, db: Session = Depends(get_db)
         vorsteuerabzug = pos.vorsteuerabzug
         steuerbefreiung_grund = None
         if unternehmen and unternehmen.ist_kleinunternehmer:
-            ust_satz = Decimal("0")
+            # Siehe _felder_aus_data() (Issue #397): §19 UStG betrifft nur Einnahmen.
+            if data.art == "Einnahme":
+                ust_satz = Decimal("0")
+            vorsteuerabzug = False
             steuerbefreiung_grund = "§19 UStG"
         split_kat = db.query(Kategorie).filter(Kategorie.id == pos.kategorie_id).first() if pos.kategorie_id else None
         if split_kat:

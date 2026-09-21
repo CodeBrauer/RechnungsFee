@@ -206,6 +206,10 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
   const kategorie_id = watch('kategorie_id')
   const artSplit = watchS('art')
   const positionenSplit = watchS('positionen')
+  // §19 UStG betrifft nur die eigenen Einnahmen (keine USt auf eigene Umsätze) - bei einer
+  // Ausgabe ist der USt-Satz des Lieferanten real, nur der Vorsteuerabzug entfällt (Issue #397).
+  const sperreUstAufNull = istKleinunternehmer && art === 'Einnahme'
+  const sperreUstAufNullSplit = istKleinunternehmer && artSplit === 'Einnahme'
 
   // Kassenstand-Prüfung (nur Barkasse)
   const zahlungsart = watch('zahlungsart')
@@ -283,7 +287,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
       setValue('ust_sonderfall', '')
       return
     }
-    setValue('ust_satz', istKleinunternehmer ? '0' : String(kat.ust_satz_standard))
+    setValue('ust_satz', sperreUstAufNull ? '0' : String(kat.ust_satz_standard))
     if (!istKleinunternehmer) {
       setValue('vorsteuerabzug', parseFloat(kat.vorsteuer_prozent) > 0)
     }
@@ -293,7 +297,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
       kat.konto_skr03 === '3120' || kat.konto_skr04 === '5920' || kat.konto_skr03 === '3125' || kat.konto_skr04 === '5925' ? '13b_abs2' :
       kat.konto_skr03 === '1588' || kat.konto_skr04 === '1433' ? 'einfuhr_ust' : null
     setValue('ust_sonderfall', sonderfall ?? '')
-  }, [kategorie_id, kategorien, isSplit, setValue, istKleinunternehmer])
+  }, [kategorie_id, kategorien, isSplit, setValue, istKleinunternehmer, sperreUstAufNull])
 
   const gewaehlteKat = (kategorien ?? []).find((k) => String(k.id) === kategorie_id)
   const istPrivatKategorie = gewaehlteKat?.kontenart === 'Privat'
@@ -417,7 +421,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
 
   function handleSplitKategorieChange(index: number, katId: string) {
     setValueS(`positionen.${index}.kategorie_id`, katId)
-    if (!katId || istKleinunternehmer) return
+    if (!katId || sperreUstAufNullSplit) return
     const kat = alle.find((k) => String(k.id) === katId)
     if (!kat) return
     setValueS(`positionen.${index}.ust_satz`, String(kat.ust_satz_standard))
@@ -517,7 +521,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
       externe_belegnr: values.externe_belegnr || undefined,
       kunde_id: values.kunde_id ? Number(values.kunde_id) : undefined,
       positionen: values.positionen.map((p) => {
-        const ustFinal = istKleinunternehmer ? '0' : p.ust_satz
+        const ustFinal = (istKleinunternehmer && values.art === 'Einnahme') ? '0' : p.ust_satz
         const bruttoFinal =
           eingabeModus === 'netto' ? nettoToBrutto(p.brutto_betrag, ustFinal) : p.brutto_betrag
         return {
@@ -577,8 +581,10 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
           <div className="mb-4 flex items-start gap-2 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
             <span className="mt-0.5">ℹ️</span>
             <span>
-              <strong>Kleinunternehmer §19 UStG</strong> – Keine Umsatzsteuer ausgewiesen. USt-Satz
-              ist gesperrt.
+              <strong>Kleinunternehmer §19 UStG</strong> –{' '}
+              {(isSplit ? artSplit : art) === 'Einnahme'
+                ? 'Keine Umsatzsteuer ausgewiesen. USt-Satz ist gesperrt.'
+                : 'Bei Ausgaben trägst du den tatsächlichen USt-Satz laut Beleg ein - die Vorsteuer ist als Kleinunternehmer trotzdem nicht abziehbar.'}
             </span>
           </div>
         )}
@@ -866,7 +872,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
                   <label className="text-xs font-medium text-slate-600 dark:text-slate-300">
                     {istEinfuhrUst ? 'Einfuhrumsatzsteuer-Betrag (€)' : eingabeModus === 'brutto' ? 'Brutto-Betrag (€)' : 'Netto-Betrag (€)'}
                   </label>
-                  {!istKleinunternehmer && !istEinfuhrUst && (
+                  {!sperreUstAufNull && !istEinfuhrUst && (
                     <button
                       type="button"
                       onClick={toggleEingabeModus}
@@ -891,7 +897,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
               <div>
                 <label className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1">
                   USt-Satz (%)
-                  {!istKleinunternehmer && unternehmen?.taetigkeitsart === 'freiberuflich' && (
+                  {!sperreUstAufNull && unternehmen?.taetigkeitsart === 'freiberuflich' && (
                     <span className="ml-1 text-slate-400 font-normal">
                       (7 % für Autoren/Heilberufe etc.)
                     </span>
@@ -899,12 +905,12 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
                 </label>
                 <select
                   {...register('ust_satz')}
-                  disabled={istKleinunternehmer || istPrivatKategorie || ist25aAnkauf || istEinfuhrUst}
+                  disabled={sperreUstAufNull || istPrivatKategorie || ist25aAnkauf || istEinfuhrUst}
                   className="w-full border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100 disabled:bg-slate-100 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed"
                 >
-                  {istKleinunternehmer || istPrivatKategorie || ist25aAnkauf || istEinfuhrUst ? (
+                  {sperreUstAufNull || istPrivatKategorie || ist25aAnkauf || istEinfuhrUst ? (
                     <option value="0">
-                      {istKleinunternehmer ? '0 % (§19 UStG)' : istPrivatKategorie ? '0 % (Privat)' : istEinfuhrUst ? 'entfällt (voller Betrag = Steuer)' : '0 % (§25a – kein VSt-Abzug)'}
+                      {sperreUstAufNull ? '0 % (§19 UStG)' : istPrivatKategorie ? '0 % (Privat)' : istEinfuhrUst ? 'entfällt (voller Betrag = Steuer)' : '0 % (§25a – kein VSt-Abzug)'}
                     </option>
                   ) : (
                     aktiveSaetze.map((s) => {
@@ -1170,7 +1176,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
             )}
 
             {/* Eingabemodus-Umschalter für Split */}
-            {!istKleinunternehmer && (
+            {!sperreUstAufNullSplit && (
               <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-900 rounded-lg px-3 py-2 text-sm">
                 <span className="text-slate-600 dark:text-slate-300">
                   Beträge eingeben als:{' '}
@@ -1199,7 +1205,7 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
                       beschreibung: '',
                       kategorie_id: '',
                       brutto_betrag: '',
-                      ust_satz: istKleinunternehmer ? '0' : '19',
+                      ust_satz: sperreUstAufNullSplit ? '0' : '19',
                       vorsteuerabzug: true,
                     })
                   }
@@ -1294,10 +1300,10 @@ export function BuchungForm({ onClose, onSuccess, bearbeiten, initialDatum, init
                       <div className="grid grid-cols-2 gap-2 items-center">
                         <select
                           {...registerS(`positionen.${i}.ust_satz`)}
-                          disabled={istKleinunternehmer}
+                          disabled={sperreUstAufNullSplit}
                           className="w-full border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 text-sm bg-white dark:bg-slate-700 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 dark:disabled:bg-slate-800 disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed"
                         >
-                          {istKleinunternehmer ? (
+                          {sperreUstAufNullSplit ? (
                             <option value="0">0 % (§19 UStG)</option>
                           ) : (
                             aktiveSaetze.map((s) => {

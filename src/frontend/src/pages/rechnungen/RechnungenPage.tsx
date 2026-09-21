@@ -2542,8 +2542,11 @@ function RechnungForm({
   }, [])
 
   const istKleinunternehmer = unternehmen?.ist_kleinunternehmer ?? false
+  // §19 UStG betrifft nur die eigenen Ausgangsrechnungen - bei einer Eingangsrechnung ist der
+  // USt-Satz des Lieferanten real, nur der Vorsteuerabzug entfällt (Issue #397).
+  const sperreUstAufNull = istKleinunternehmer && typ === 'ausgang'
   const aktiveSaetze = ustSaetze.filter((s) => s.ist_aktiv)
-  const defaultUstGlobal = istKleinunternehmer
+  const defaultUstGlobal = sperreUstAufNull
     ? '0'
     : (ustSaetze.find((s) => s.ist_default)?.satz
         ? String(parseFloat(ustSaetze.find((s) => s.ist_default)!.satz))
@@ -2927,6 +2930,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
   const rechnungRabattNum = parseFloat(rechnungRabatt.replace(',', '.')) || 0
   const vorschauPositionenGueltig = positionen.some((p) => p.beschreibung.trim())
   const vorschauRequest: RechnungVorschauRequest | null = vorschauPositionenGueltig ? {
+    typ,
     positionen: positionen.map((p) => ({
       beschreibung: p.beschreibung || '-',
       menge: p.menge || '1',
@@ -3003,7 +3007,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
       // Kategoriewechsel schlägt den hinterlegten USt-Satz der Kategorie vor (z. B. 0 % bei
       // "Wareneinkauf Drittland (ohne USt)") - sonst bleibt der zuvor gewählte Satz stehen,
       // auch wenn er zur neuen Kategorie nicht mehr passt.
-      if (field === 'kategorie_id' && !istKleinunternehmer) {
+      if (field === 'kategorie_id' && !sperreUstAufNull) {
         const kat = (kategorien ?? []).find((k) => String(k.id) === value)
         if (kat) next.ust_satz = String(kat.ust_satz_standard)
       }
@@ -3034,11 +3038,9 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
 
   function addPosition() {
     const letztePos = positionen[positionen.length - 1]
-    const defaultUst = istKleinunternehmer
-      ? '0'
-      : typ === 'ausgang'
-        ? defaultUstGlobal
-        : String((kategorien ?? []).find((k) => String(k.id) === (letztePos?.kategorie_id ?? ''))?.ust_satz_standard ?? defaultUstGlobal)
+    const defaultUst = typ === 'ausgang'
+      ? defaultUstGlobal
+      : String((kategorien ?? []).find((k) => String(k.id) === (letztePos?.kategorie_id ?? ''))?.ust_satz_standard ?? defaultUstGlobal)
     setPositionen((prev) => [...prev, { ...leerPosition(defaultUst), kategorie_id: letztePos?.kategorie_id }])
   }
 
@@ -3050,7 +3052,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
   function fillPositionFromArtikel(i: number, a: ArtikelSuche) {
     // §25a: kein USt-Ausweis, VK brutto = VK netto
     const istDiff = a.differenzbesteuerung
-    const ust_satz = (istKleinunternehmer || istDiff || istReverseCharge || istEuLieferung || istDrittlandLeistung || istAusfuhrlieferung) ? '0' : String(parseInt(a.steuersatz))
+    const ust_satz = (sperreUstAufNull || istDiff || istReverseCharge || istEuLieferung || istDrittlandLeistung || istAusfuhrlieferung) ? '0' : String(parseInt(a.steuersatz))
     const preis = istDiff ? a.vk_brutto : (eingabeModus === 'netto' ? a.vk_netto : a.vk_brutto)
     setPositionen((prev) => prev.map((p, idx) =>
       idx === i
@@ -3123,7 +3125,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
       // oben (Issue #332: keine zweite, abweichende Umrechnung mehr im Frontend).
       positionen: positionen.map((p) => {
         const istDiff = p.differenzbesteuerung ?? false
-        const ust_satz = (istKleinunternehmer || istDiff || istReverseCharge || istEuLieferung || istDrittlandLeistung || istAusfuhrlieferung) ? '0' : (p.ust_satz || '0')
+        const ust_satz = (sperreUstAufNull || istDiff || istReverseCharge || istEuLieferung || istDrittlandLeistung || istAusfuhrlieferung) ? '0' : (p.ust_satz || '0')
         const rabatt = parseFloat((p.rabatt_prozent ?? '').replace(',', '.')) || 0
         return {
           beschreibung: p.beschreibung,
@@ -3658,8 +3660,10 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
         <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2 text-xs text-amber-800 dark:text-amber-300">
           <span className="mt-0.5">ℹ️</span>
           <span>
-            <strong>Kleinunternehmer §19 UStG</strong> – Keine Umsatzsteuer ausgewiesen.
-            USt-Satz ist gesperrt.
+            <strong>Kleinunternehmer §19 UStG</strong> –{' '}
+            {typ === 'ausgang'
+              ? 'Keine Umsatzsteuer ausgewiesen. USt-Satz ist gesperrt.'
+              : 'Trag den tatsächlich vom Lieferanten ausgewiesenen USt-Satz ein - die Vorsteuer ist als Kleinunternehmer trotzdem nicht abziehbar.'}
           </span>
         </div>
       )}
@@ -3690,7 +3694,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
                 {schnellmodus ? 'Positionen aufschlüsseln →' : '← Einfache Eingabe'}
               </button>
             )}
-            {(!schnellmodus || typ === 'ausgang') && !istKleinunternehmer && dokumentTyp !== 'Lieferschein' && (
+            {(!schnellmodus || typ === 'ausgang') && !sperreUstAufNull && dokumentTyp !== 'Lieferschein' && (
               <button
                 type="button"
                 onClick={toggleEingabeModus}
@@ -3778,7 +3782,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
                     className="flex-1 border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
                     placeholder="0,00"
                   />
-                  {!istKleinunternehmer && (
+                  {!sperreUstAufNull && (
                     <button
                       type="button"
                       onClick={toggleEingabeModus}
@@ -3794,10 +3798,10 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
                 <select
                   value={positionen[0]?.ust_satz ?? defaultUstGlobal}
                   onChange={(e) => updatePosition(0, 'ust_satz', e.target.value)}
-                  disabled={istKleinunternehmer}
+                  disabled={sperreUstAufNull}
                   className="w-full border border-slate-300 dark:border-slate-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
                 >
-                  {istKleinunternehmer ? (
+                  {sperreUstAufNull ? (
                     <option value="0">0 % (§19)</option>
                   ) : (
                     aktiveSaetze.map((s) => {
@@ -3937,10 +3941,10 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
                         <select
                           value={pos.ust_satz}
                           onChange={(e) => updatePosition(i, 'ust_satz', e.target.value)}
-                          disabled={istKleinunternehmer}
+                          disabled={sperreUstAufNull}
                           className="w-full border-0 outline-none bg-transparent text-right text-slate-700 dark:text-slate-200 disabled:text-slate-400 dark:disabled:text-slate-500 disabled:cursor-not-allowed"
                         >
-                          {istKleinunternehmer ? (
+                          {sperreUstAufNull ? (
                             <option value="0">0 (§19)</option>
                           ) : (
                             aktiveSaetze.map((s) => {
@@ -4057,7 +4061,7 @@ const kundeIdNum = partnerId ? parseInt(partnerId) : null
           onSaveArtikel={(neu) => {
             setShowNeuArtikel(false)
             const istDiff = neu.differenzbesteuerung
-            const ust_satz = (istKleinunternehmer || istDiff || istReverseCharge || istEuLieferung || istDrittlandLeistung || istAusfuhrlieferung) ? '0' : String(parseInt(neu.steuersatz))
+            const ust_satz = (sperreUstAufNull || istDiff || istReverseCharge || istEuLieferung || istDrittlandLeistung || istAusfuhrlieferung) ? '0' : String(parseInt(neu.steuersatz))
             const preis = istDiff ? neu.vk_brutto : (eingabeModus === 'netto' ? neu.vk_netto : neu.vk_brutto)
             setPositionen(prev => {
               const letzteIdx = prev.length - 1

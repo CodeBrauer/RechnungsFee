@@ -302,6 +302,8 @@ def _erzeuge_vorsteuer_ansprueche(rechnung: "Rechnung", db: Session) -> None:
 
     Muss nach _vorsteuer_kategorie_fehlt()-Prüfung aufgerufen werden (jede Position hat dann
     eine ermittelbare Kategorie)."""
+    unternehmen = db.query(Unternehmen).first()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer)
     netto_gruppen: dict[tuple[int | None, int], Decimal] = defaultdict(lambda: Decimal("0"))
     ust_gruppen: dict[tuple[int | None, int], Decimal] = defaultdict(lambda: Decimal("0"))
     for pos in rechnung.positionen:
@@ -322,7 +324,10 @@ def _erzeuge_vorsteuer_ansprueche(rechnung: "Rechnung", db: Session) -> None:
         sonderfall, ust03, ust04 = _klassifiziere_sonderfall(
             kat, rechnung.ist_reverse_charge, satz_d, ust03_default, ust04_default
         )
-        vst_abzug = satz > 0 or sonderfall == "einfuhr_ust"
+        # Kleinunternehmer §19 UStG: nie Vorsteuerabzug, unabhaengig vom (jetzt realen,
+        # Issue #397) USt-Satz der Position - der Satz spiegelt nur den tatsaechlich vom
+        # Lieferanten ausgewiesenen Betrag, begruendet aber keinen eigenen Abzug.
+        vst_abzug = (satz > 0 or sonderfall == "einfuhr_ust") and not ist_kleinunternehmer
         va = VorsteuerAnspruch(
             rechnung_id=rechnung.id,
             datum=rechnung.datum,
@@ -1250,7 +1255,8 @@ def rechnung_vorschau(data: RechnungVorschauRequest, db: Session = Depends(get_d
     wie create_rechnung()/update_rechnung() (Issue #332: Formular-Vorschau darf nicht mehr selbst
     rechnen, sondern muss dieselbe, einzige Berechnung wie beim Speichern abfragen)."""
     unternehmen = db.query(Unternehmen).first()
-    ist_kleinunternehmer = unternehmen.ist_kleinunternehmer if unternehmen else False
+    # §19 UStG betrifft nur Ausgangsdokumente (Issue #397) - siehe create_rechnung()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer and data.typ == "ausgang")
     ist_steuerfrei_ausland = (
         data.ist_reverse_charge or data.ist_eu_lieferung
         or data.ist_drittland_leistung or data.ist_ausfuhrlieferung
@@ -1295,7 +1301,10 @@ def create_rechnung(data: RechnungCreate, db: Session = Depends(get_db)):
         )
 
     unternehmen = db.query(Unternehmen).first()
-    ist_kleinunternehmer = unternehmen.ist_kleinunternehmer if unternehmen else False
+    # §19 UStG betrifft nur die eigenen Ausgangsrechnungen (keine USt auf eigene Umsätze) -
+    # bei Eingangsrechnungen ist der USt-Satz des Lieferanten real und wird nur nicht als
+    # Vorsteuer abgezogen (Issue #397). ist_kleinunternehmer hier NUR fuer _berechne_rechnung().
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer and data.typ == "ausgang")
 
     # Rechnungsnummer: aus Nummernkreis wenn nicht angegeben
     rechnungsnummer = data.rechnungsnummer
@@ -1485,7 +1494,8 @@ def update_rechnung(rechnung_id: int, data: RechnungUpdate, db: Session = Depend
         raise HTTPException(status_code=409, detail="Nur offene Aufträge können bearbeitet werden.")
 
     unternehmen = db.query(Unternehmen).first()
-    ist_kleinunternehmer = unternehmen.ist_kleinunternehmer if unternehmen else False
+    # §19 UStG betrifft nur Ausgangsrechnungen (Issue #397) - siehe create_rechnung()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer and rechnung.typ == "ausgang")
 
     for field in ("rechnungsnummer", "datum", "leistung_von", "leistung_bis", "faellig_am", "kunde_id",
                   "lieferant_id", "partner_freitext", "partner_strasse", "partner_hausnummer",
@@ -2450,7 +2460,11 @@ def _ausgangs_buchungsgruppen(
     gruppen_brutto_mixed: dict[tuple[int, bool], Decimal] = {}
     ust_satz = Decimal("0")
 
-    if ist_kleinunternehmer or not rechnung.positionen:
+    # trotz des Funktionsnamens auch von Eingangsrechnungs-Zahlungen genutzt (siehe Docstring) -
+    # §19 UStG zwingt nur die eigenen Ausgangsrechnungen auf 0% (Issue #397); bei einer
+    # Eingangsrechnung ist der reale Lieferanten-USt-Satz weiterhin relevant fuer die
+    # Netto/USt-Aufteilung der Zahlungsbuchung (nur der Vorsteuerabzug bleibt gesperrt).
+    if (ist_kleinunternehmer and rechnung.typ == "ausgang") or not rechnung.positionen:
         return satz_ratios, ust_satz, False, gruppen_keys, gruppen_kategorie, gruppen_marge, gruppen_brutto_mixed
 
     hat_25a = any(pos.differenzbesteuerung for pos in rechnung.positionen)
@@ -2728,7 +2742,12 @@ def zahlung_bar_erstellen(rechnung_id: int, data: BarZahlungCreate, db: Session 
                 u = (brutto - n).quantize(Decimal("0.01"), ROUND_HALF_UP)
         else:
             n, u = brutto, Decimal("0.00")
-        vst_abzug = (art == "Ausgabe" and (satz > 0 or sonderfall == "einfuhr_ust"))
+        # Kleinunternehmer §19 UStG: nie Vorsteuerabzug, auch wenn satz jetzt den realen
+        # Lieferanten-USt-Satz zeigt (Issue #397 - siehe _ausgangs_buchungsgruppen()).
+        vst_abzug = (
+            art == "Ausgabe" and (satz > 0 or sonderfall == "einfuhr_ust")
+            and not (unternehmen and unternehmen.ist_kleinunternehmer)
+        )
         e = Journaleintrag(
             datum=data.datum,
             belegnr=_naechste_belegnr_journal(db, data.datum),

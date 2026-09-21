@@ -251,6 +251,9 @@ class RechnungUpdate(BaseModel):
 # ---------------------------------------------------------------------------
 
 class RechnungVorschauRequest(BaseModel):
+    # Default "ausgang" (Issue #397): Angebot/Auftrag/Proforma sind immer Ausgangsdokumente
+    # und schicken typ nicht mit - nur RechnungenPage.tsx setzt es explizit fuer Eingang/Ausgang.
+    typ: str = "ausgang"
     positionen: List[RechnungspositionCreate]
     eingabemodus: str = "netto"
     rabatt_prozent: Decimal = Decimal("0")

@@ -1617,6 +1617,7 @@ export const getRechnung = (id: number) => request<Rechnung>(`/rechnungen/${id}`
 // exakt dieselbe Funktion wie createRechnung/updateRechnung. Das Formular soll selbst nicht mehr
 // rechnen, nur noch anzeigen was der Server zurückgibt.
 export type RechnungVorschauRequest = {
+  typ?: 'eingang' | 'ausgang'
   positionen: RechnungspositionCreate[]
   eingabemodus: 'netto' | 'brutto'
   rabatt_prozent?: number

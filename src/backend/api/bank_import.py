@@ -22,6 +22,7 @@ from database.models import (
     Kategorie, Konto, Kunde, Lieferant, Mahnung, Rechnung, Unternehmen,
 )
 from utils.bank_csv_parser import (
+    decode_csv_text,
     detect_delimiter,
     detect_encoding,
     extract_konto_iban,
@@ -818,13 +819,22 @@ def _vorschau_fuer_bytes(
             raise HTTPException(status_code=404, detail="Template nicht gefunden.")
     else:
         enc = detect_encoding(raw)
-        text_content = raw.decode(enc, errors="replace")
+        text_content = decode_csv_text(raw, enc)
         delim = detect_delimiter(text_content)
         import csv as csv_mod
         lines = text_content.splitlines()
-        reader = csv_mod.reader(lines[:1], delimiter=delim, quotechar='"')
-        header = next(reader, [])
-        template = find_best_template(header, templates)
+        # Header steht bei den meisten Banken in Zeile 1 - manche (z.B. DKB) stellen davor
+        # aber eine Anzahl Metazeilen voran (Kontobezeichnung, Kontostand), die zwischen
+        # Exports variieren kann (Issue #398). Zeilen der Reihe nach prüfen und beim ersten
+        # Treffer stoppen - bei Banken mit Header in Zeile 1 weiterhin sofortiger Treffer
+        # wie bisher, das Scannen greift nur wenn Zeile 1 bei keinem Template passt.
+        template = None
+        for zeile in lines[:20]:
+            reader = csv_mod.reader([zeile], delimiter=delim, quotechar='"')
+            header = next(reader, [])
+            template = find_best_template(header, templates)
+            if template:
+                break
 
     if not template:
         raise HTTPException(

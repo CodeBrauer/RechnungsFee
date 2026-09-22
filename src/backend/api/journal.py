@@ -38,29 +38,7 @@ ERLAUBTE_MIME_TYPES = {"application/pdf", "image/jpeg", "image/png", "image/tiff
 router = APIRouter(prefix="/api/journal", tags=["Journal"])
 
 
-import re as _re
-
-
-def _belegnr_aus_format(format_str: str, datum: date, nr: int) -> str:
-    """Wendet das Format-Template an. Y=Jahrsstelle, MM=Monat, TT=Tag, #=Nummernstelle.
-    Gross-/Kleinschreibung der Platzhalter wird nicht unterschieden (Nutzer-Feedback:
-    ein von Hand eingetipptes Format wie "RE-tt.mm.yyyy" in Kleinbuchstaben wurde bisher
-    gar nicht ersetzt, da die Suche nur exakt YYYY/YY/MM/TT in Grossbuchstaben fand - die
-    Rechnungsnummer erschien dann unveraendert als Format-Vorlage statt als echte Nummer).
-    Reihenfolge bleibt YYYY vor YY wichtig, sonst wuerde YYYY faelschlich als zwei YY erkannt."""
-    year_4 = str(datum.year)
-    year_2 = year_4[-2:]
-    month  = f"{datum.month:02d}"
-    day    = f"{datum.day:02d}"
-    result = _re.sub("YYYY", year_4, format_str, flags=_re.IGNORECASE)
-    result = _re.sub("YY",   year_2, result,     flags=_re.IGNORECASE)
-    result = _re.sub("MM",   month,  result,     flags=_re.IGNORECASE)
-    result = _re.sub("TT",   day,    result,     flags=_re.IGNORECASE)
-
-    def _pad(m: _re.Match) -> str:
-        return str(nr).zfill(len(m.group()))
-
-    return _re.sub(r"#+", _pad, result)
+from utils.belegnummer import belegnr_aus_format as _belegnr_aus_format
 
 
 def _storno_infos(db: Session, eintraege: list[Journaleintrag]) -> dict[int, dict]:
@@ -322,7 +300,13 @@ def _felder_aus_data(data: "JournalEintragCreate", db: Session) -> dict:
     steuerbefreiung_grund = None
 
     if unternehmen and unternehmen.ist_kleinunternehmer:
-        ust_satz = Decimal("0")
+        # §19 UStG betrifft nur die eigenen Einnahmen (keine USt auf eigene Umsätze) - bei
+        # einer Ausgabe ist der USt-Satz des Lieferanten real, nur der Vorsteuerabzug bleibt
+        # gesperrt (Issue #397). vorsteuerabzug wird serverseitig hart auf False erzwungen,
+        # unabhängig davon was das Frontend schickt (dort ist die Checkbox nur ausgeblendet).
+        if data.art == "Einnahme":
+            ust_satz = Decimal("0")
+        vorsteuerabzug = False
         steuerbefreiung_grund = "§19 UStG"
 
     kat = db.query(Kategorie).filter(Kategorie.id == data.kategorie_id).first() if data.kategorie_id else None
@@ -733,7 +717,10 @@ def create_split_buchung(data: SplitBuchungCreate, db: Session = Depends(get_db)
         vorsteuerabzug = pos.vorsteuerabzug
         steuerbefreiung_grund = None
         if unternehmen and unternehmen.ist_kleinunternehmer:
-            ust_satz = Decimal("0")
+            # Siehe _felder_aus_data() (Issue #397): §19 UStG betrifft nur Einnahmen.
+            if data.art == "Einnahme":
+                ust_satz = Decimal("0")
+            vorsteuerabzug = False
             steuerbefreiung_grund = "§19 UStG"
         split_kat = db.query(Kategorie).filter(Kategorie.id == pos.kategorie_id).first() if pos.kategorie_id else None
         if split_kat:

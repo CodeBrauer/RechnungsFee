@@ -53,6 +53,20 @@ def detect_encoding(raw: bytes) -> str:
     return encoding
 
 
+def decode_csv_text(raw: bytes, encoding: str) -> str:
+    """Dekodiert raw und entfernt ein führendes BOM immer, unabhängig von encoding.
+
+    Ein Bank-Template hat i.d.R. eine fest hinterlegte encoding (z.B. "UTF-8" statt
+    "utf-8-sig", siehe seed.py) - die gewinnt beim Aufruf bewusst gegen die BOM-fähige
+    detect_encoding()-Erkennung (Vorlagen-encoding soll normalerweise Vorrang haben).
+    Ohne diesen Schritt landet ein UTF-8-BOM dadurch als sichtbares U+FEFF vor dem
+    ersten Spaltennamen im Text, der Feldabgleich schlägt für jede Zeile still fehl und
+    es werden 0 Transaktionen erkannt (Issue #398). Bei Dateien ohne BOM ist dies ein
+    No-Op, ändert also nichts am bestehenden Verhalten.
+    """
+    return raw.decode(encoding, errors="replace").removeprefix("﻿")
+
+
 def detect_delimiter(text: str) -> str:
     """Zählt Vorkommen typischer Delimiter in der ersten Zeile."""
     first_line = text.split("\n")[0]
@@ -86,6 +100,33 @@ def find_best_template(header: list[str], templates: list) -> Optional[object]:
             best = tpl
     if best_score >= 0.8:
         return best
+    return None
+
+
+_HEADER_SUCH_FENSTER = 20
+
+
+def find_header_row(lines: list[str], delimiter: str, erkennungs_spalten: list[str]) -> Optional[int]:
+    """Sucht innerhalb der ersten Zeilen (Fenster _HEADER_SUCH_FENSTER) die Zeile mit dem
+    besten Spalten-Treffer gegen erkennungs_spalten und gibt deren Index zurück, oder None
+    wenn keine Zeile eine ausreichende Übereinstimmung liefert (score >= 0.8, wie
+    find_best_template()).
+
+    Manche Banken (z.B. DKB) stellen vor der eigentlichen Spaltenüberschrift eine Anzahl
+    Metazeilen voran (Kontobezeichnung, Kontostand), die zwischen Exports variieren kann - ein
+    fest hinterlegtes skip_rows trifft dann nicht mehr zuverlässig (Issue #398)."""
+    if not erkennungs_spalten:
+        return None
+    best_idx = None
+    best_score = 0.0
+    for i, zeile in enumerate(lines[:_HEADER_SUCH_FENSTER]):
+        row = next(csv.reader([zeile], delimiter=delimiter, quotechar='"'), [])
+        score = match_score(row, erkennungs_spalten)
+        if score > best_score:
+            best_score = score
+            best_idx = i
+    if best_score >= 0.8:
+        return best_idx
     return None
 
 
@@ -156,7 +197,7 @@ def parse_csv(
         betrag, waehrung, saldo, referenz
     """
     enc = encoding or detect_encoding(raw)
-    text = raw.decode(enc, errors="replace")
+    text = decode_csv_text(raw, enc)
     delim = delimiter or detect_delimiter(text)
 
     # Mapping ohne internen Sonderkey
@@ -229,7 +270,7 @@ def extract_konto_iban(raw: bytes, template) -> Optional[str]:
     if skip_rows == 0:
         return None
     enc = detect_encoding(raw)
-    text = raw.decode(enc, errors="replace")
+    text = decode_csv_text(raw, enc)
     header_text = "\n".join(text.splitlines()[:skip_rows])
     match = _IBAN_RE.search(header_text)
     if match:
@@ -423,14 +464,33 @@ def parse_csv_mit_template(raw: bytes, template) -> tuple[list[dict], str]:
     """
     mapping = json.loads(template.column_mapping) if isinstance(template.column_mapping, str) else template.column_mapping
     enc = detect_encoding(raw)
+    effective_encoding = template.encoding or enc
+
+    # skip_rows ist am Template fest hinterlegt, manche Banken (z.B. DKB) stellen der
+    # eigentlichen Spaltenüberschrift aber eine je nach Export wechselnde Anzahl Metazeilen
+    # voran (Kontobezeichnung, Kontostand) - ein starres skip_rows trifft dann nicht mehr
+    # zuverlässig. Nur ein Fallback (Issue #398): stimmt die konfigurierte Zeile bereits mit
+    # den Erkennungsspalten überein, ändert sich am Ergebnis nichts.
+    skip_rows = template.skip_rows
+    erkennungs = mapping.get("__erkennungs__", [])
+    if erkennungs:
+        text = decode_csv_text(raw, effective_encoding)
+        lines = text.splitlines()
+        konfigurierte_zeile = next(
+            csv.reader(lines[skip_rows:skip_rows + 1], delimiter=template.delimiter, quotechar='"'), []
+        )
+        if match_score(konfigurierte_zeile, erkennungs) < 0.8:
+            gefunden = find_header_row(lines, template.delimiter, erkennungs)
+            if gefunden is not None:
+                skip_rows = gefunden
 
     transaktionen = parse_csv(
         raw=raw,
         column_mapping=mapping,
         delimiter=template.delimiter,
-        encoding=template.encoding or enc,
+        encoding=effective_encoding,
         decimal_separator=template.decimal_separator,
         date_format=template.date_format,
-        skip_rows=template.skip_rows,
+        skip_rows=skip_rows,
     )
     return transaktionen, enc

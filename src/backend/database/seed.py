@@ -180,9 +180,19 @@ def seed_nummernkreise(db: Session) -> None:
     if "journal" not in typen and "kassenbuch" not in typen:
         neue.append(Nummernkreis(bezeichnung="Journal", typ="journal", format="YY####", naechste_nr=1, reset_jaehrlich=True))
     if "rechnung_ausgang" not in typen:
-        neue.append(Nummernkreis(bezeichnung="Ausgangsrechnungen", typ="rechnung_ausgang", format="YY####", naechste_nr=1, reset_jaehrlich=True))
+        # Issue #399: der "RE-"-Praefix stand bis dahin fest im Code (nicht im Format) - hier
+        # direkt mitgeseedet, damit eine Neuinstallation optisch dasselbe Ergebnis wie bisher
+        # liefert (RE-260001), das Format aber ab sofort die alleinige, frei editierbare Quelle
+        # der Wahrheit ist. Bestandsinstallationen bekommen dasselbe per Migration (main.py).
+        neue.append(Nummernkreis(bezeichnung="Ausgangsrechnungen", typ="rechnung_ausgang", format="RE-YY####", naechste_nr=1, reset_jaehrlich=True))
     if "rechnung_eingang" not in typen:
-        neue.append(Nummernkreis(bezeichnung="Eingangsrechnungen", typ="rechnung_eingang", format="YY####", naechste_nr=1, reset_jaehrlich=True))
+        neue.append(Nummernkreis(bezeichnung="Eingangsrechnungen", typ="rechnung_eingang", format="ER-YY####", naechste_nr=1, reset_jaehrlich=True))
+    if "rechnung_wiederkehrend" not in typen:
+        # Issue #399 Wunsch 2: eigener, standardmaessig inaktiver Nummernkreis fuer aus
+        # Wiederkehrenden Vorlagen erzeugte Ausgangsrechnungen - solange "aktiv" aus ist,
+        # zaehlen diese Rechnungen weiterhin im normalen rechnung_ausgang-Kreis mit (siehe
+        # api/wiederkehrend.py::_naechste_rechnungsnr()).
+        neue.append(Nummernkreis(bezeichnung="Wiederkehrende Rechnungen", typ="rechnung_wiederkehrend", format="DA-YY####", naechste_nr=1, reset_jaehrlich=True, aktiv=False))
     if "kunde" not in typen:
         neue.append(Nummernkreis(bezeichnung="Kundennummern", typ="kunde", format="KD-####", naechste_nr=1, reset_jaehrlich=False))
     if "lieferant" not in typen:

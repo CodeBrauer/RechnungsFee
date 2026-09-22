@@ -3,14 +3,44 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { getNummernkreise, updateNummernkreis, getNummernkreisVorschau, getUnternehmen, type Nummernkreis } from '../../api/client'
 import { useMxAuto } from '../../hooks/useAnsicht'
 
-const FORMAT_BEISPIELE = [
-  { label: 'YY#### (z.B. 260001)', value: 'YY####' },
-  { label: 'YYYY-#### (z.B. 2026-0001)', value: 'YYYY-####' },
-  { label: 'YYYY/#### (z.B. 2026/0001)', value: 'YYYY/####' },
-  { label: 'YYYY-MM-#### (z.B. 2026-04-0001)', value: 'YYYY-MM-####' },
-  { label: 'YYYY-MM-TT-#### (z.B. 2026-04-25-001)', value: 'YYYY-MM-TT-####' },
-  { label: '########## (nur Nummer, z.B. 000001)', value: '######' },
+// Seit Issue #399 setzt der Code keinen Präfix mehr automatisch vor die Nummer (das Format
+// entscheidet allein) - die Vorlagen unten bieten deshalb zusätzlich eine Variante mit
+// Beispiel-Präfix an. Welcher Präfix sinnvoll ist, hängt vom jeweiligen Nummernkreis ab (z.B.
+// "RE-" für Ausgangsrechnungen, aber sinnlos für z.B. Artikelnummern) - deshalb pro typ.
+const TYP_PRAEFIX_BEISPIEL: Record<string, string> = {
+  rechnung_ausgang: 'RE-',
+  rechnung_eingang: 'ER-',
+  rechnung_wiederkehrend: 'DA-',
+  kunde: 'KD-',
+  lieferant: 'LI-',
+  artikel: 'ART-',
+  lieferschein: 'LS-',
+  angebot: 'ANG-',
+  auftrag: 'AU-',
+  proforma: 'PRF-',
+  stornorechnung: 'STORNO-',
+}
+
+const VORLAGEN_MUSTER = [
+  { muster: 'YY####', beispiel: '260001' },
+  { muster: 'YYYY-####', beispiel: '2026-0001' },
+  { muster: 'YYYY/####', beispiel: '2026/0001' },
+  { muster: 'YYYY-MM-####', beispiel: '2026-04-0001' },
+  { muster: 'YYYY-MM-TT-####', beispiel: '2026-04-25-001' },
+  { muster: '######', beispiel: '000001' },
 ]
+
+function formatBeispiele(typ: string): { label: string; value: string }[] {
+  const praefix = TYP_PRAEFIX_BEISPIEL[typ]
+  return VORLAGEN_MUSTER.flatMap(({ muster, beispiel }) => {
+    const ohnePraefix = { label: `${muster} (z.B. ${beispiel})`, value: muster }
+    if (!praefix) return [ohnePraefix]
+    return [
+      ohnePraefix,
+      { label: `${praefix}${muster} (z.B. ${praefix}${beispiel})`, value: `${praefix}${muster}` },
+    ]
+  })
+}
 
 interface EditState {
   bezeichnung: string
@@ -34,7 +64,8 @@ export function NummernkreisePage() {
   const { data: unternehmen } = useQuery({ queryKey: ['unternehmen'], queryFn: getUnternehmen, staleTime: 1000 * 60 * 10 })
 
   const sichtbar = (nummernkreise ?? []).filter(nk =>
-    nk.typ !== 'lieferschein' || !!unternehmen?.lieferschein_aktiv
+    (nk.typ !== 'lieferschein' || !!unternehmen?.lieferschein_aktiv) &&
+    (nk.typ !== 'rechnung_wiederkehrend' || !!unternehmen?.wiederkehrend_aktiv)
   )
 
   const mutation = useMutation({
@@ -45,6 +76,21 @@ export function NummernkreisePage() {
       setEditId(null)
       setEditState(null)
     },
+  })
+
+  // Eigener Nummernkreis für wiederkehrende Rechnungen (Issue #399, Wunsch 2): das An/Aus wird
+  // sofort gespeichert, unabhängig vom Bearbeiten-Formular für Format/Nächste Nummer. Ein
+  // Ausschalten nach der ersten vergebenen Nummer lehnt das Backend mit 409 ab (Einweg-Sperre -
+  // sonst könnten später doppelte Rechnungsnummern entstehen, siehe api/nummernkreise.py).
+  const [aktivFehler, setAktivFehler] = useState<string | null>(null)
+  const aktivMutation = useMutation({
+    mutationFn: ({ id, aktiv }: { id: number; aktiv: boolean }) =>
+      updateNummernkreis(id, { aktiv }),
+    onSuccess: () => {
+      setAktivFehler(null)
+      qc.invalidateQueries({ queryKey: ['nummernkreise'] })
+    },
+    onError: (err: Error) => setAktivFehler(err.message),
   })
 
   const vorschauQuery = useQuery({
@@ -86,9 +132,46 @@ export function NummernkreisePage() {
         <p className="text-slate-400 text-sm">Lade…</p>
       ) : (
         <div className="space-y-4">
-          {sichtbar.map((nk) => (
+          {sichtbar.map((nk) => {
+            const istWiederkehrend = nk.typ === 'rechnung_wiederkehrend'
+            const gesperrtInaktiv = istWiederkehrend && !nk.aktiv
+            const kannDeaktivieren = nk.naechste_nr <= 1
+            return (
             <div key={nk.id} className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-5">
-              {editId === nk.id && editState ? (
+              {istWiederkehrend && (
+                <div className="flex items-center justify-between mb-4 pb-4 border-b border-slate-100 dark:border-slate-700">
+                  <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={nk.aktiv}
+                      disabled={aktivMutation.isPending || (nk.aktiv && !kannDeaktivieren)}
+                      onChange={(e) => aktivMutation.mutate({ id: nk.id, aktiv: e.target.checked })}
+                      className="rounded"
+                    />
+                    Eigener Nummernkreis aktiv
+                  </label>
+                  {nk.aktiv && !kannDeaktivieren && (
+                    <span
+                      className="text-xs text-slate-400 dark:text-slate-500"
+                      title={`Kann nicht mehr deaktiviert werden - es wurden bereits ${nk.naechste_nr - 1} Rechnung(en) mit diesem Nummernkreis erstellt.`}
+                    >
+                      🔒 dauerhaft aktiv
+                    </span>
+                  )}
+                </div>
+              )}
+              {aktivFehler && istWiederkehrend && (
+                <p className="text-red-600 text-sm mb-3">{aktivFehler}</p>
+              )}
+              {gesperrtInaktiv ? (
+                <div className="opacity-50">
+                  <p className="font-medium text-slate-800 dark:text-slate-100">{nk.bezeichnung}</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+                    Wiederkehrende Rechnungen laufen aktuell im Nummernkreis der Ausgangsrechnungen mit.
+                    Aktivieren, um eine eigene Nummernserie zu nutzen.
+                  </p>
+                </div>
+              ) : editId === nk.id && editState ? (
                 /* Bearbeitungs-Modus */
                 <div className="space-y-4">
                   <div>
@@ -117,7 +200,7 @@ export function NummernkreisePage() {
                         value=""
                       >
                         <option value="">Vorlage…</option>
-                        {FORMAT_BEISPIELE.map((b) => (
+                        {formatBeispiele(nk.typ).map((b) => (
                           <option key={b.value} value={b.value}>{b.label}</option>
                         ))}
                       </select>
@@ -205,7 +288,7 @@ export function NummernkreisePage() {
                 </div>
               )}
             </div>
-          ))}
+          )})}
         </div>
       )}
     </div>

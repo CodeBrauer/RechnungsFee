@@ -22,6 +22,7 @@ from database.models import (
     Kategorie, Konto, Kunde, Lieferant, Mahnung, Rechnung, Unternehmen,
 )
 from utils.bank_csv_parser import (
+    decode_csv_text,
     detect_delimiter,
     detect_encoding,
     extract_konto_iban,
@@ -476,7 +477,12 @@ def _buche_pfad_a(
         ) = _ausgangs_buchungsgruppen(db, rechnung, ist_ku)
         if not hat_gemischte_25a:
             kat_id, kat = _erloes_kategorie(db, rechnung)
-    elif not ist_ku and rechnung.positionen:
+    elif rechnung.positionen:
+        # Eingangsrechnung: §19 UStG sperrt nur den Vorsteuerabzug (unten via g_vst_abzug),
+        # nicht die Netto/USt-Aufteilung nach dem realen Lieferanten-USt-Satz (Issue #397) -
+        # "not ist_ku" hier entfernt, sonst wuerde die Zahlung eines Kleinunternehmers immer
+        # in einen einzigen 0%-Topf ohne Kategorie fallen statt die echten Rechnungspositionen
+        # zu spiegeln.
         gruppen_brutto: dict[int, Decimal] = {}
         kat_gruppen: dict[int | None, Decimal] = {}
         for pos in rechnung.positionen:
@@ -489,8 +495,11 @@ def _buche_pfad_a(
         kat = db.query(Kategorie).filter(Kategorie.id == kat_id).first() if kat_id else None
 
     # Kategorie ist bei Eingangsrechnungen Pflicht - sonst bucht der Bank-Import klaglos
-    # mit kategorie_id=NULL durch (kein Sachkonto, DATEV-Importfehler beim Export).
-    # Gleiche Regel wie bei der manuellen Zahlungsverbuchung (zahlung_bar_erstellen).
+    # mit kategorie_id=NULL durch (kein Sachkonto, DATEV-Importfehler beim Export). Weiterhin
+    # "not ist_ku": Alt-Eingangsrechnungen von Kleinunternehmern (vor Issue #397) haben u.U.
+    # nie eine Kategorie bekommen, weil sie bislang gar nicht verlangt wurde - diese duerfen
+    # weiter ohne Kategorie durchgebucht werden. Neue Kleinunternehmer-Rechnungen MIT Kategorie
+    # nutzen sie oben trotzdem (kat_id wird jetzt korrekt ermittelt, siehe elif oben).
     if art == "Ausgabe" and not ist_ku and kat_id is None:
         raise HTTPException(status_code=422, detail="keine_kategorie")
 
@@ -574,7 +583,9 @@ def _buche_pfad_a(
             if g_marge is not None:
                 g_marge = -g_marge
 
-        g_vst_abzug = art == "Ausgabe" and g_satz > 0
+        # Kleinunternehmer §19 UStG: nie Vorsteuerabzug, auch wenn g_satz jetzt den realen
+        # Lieferanten-USt-Satz zeigt (Issue #397).
+        g_vst_abzug = art == "Ausgabe" and g_satz > 0 and not ist_ku
         e = Journaleintrag(
             datum=tx.datum,
             belegnr=_naechste_belegnr(db, tx.datum),
@@ -808,13 +819,22 @@ def _vorschau_fuer_bytes(
             raise HTTPException(status_code=404, detail="Template nicht gefunden.")
     else:
         enc = detect_encoding(raw)
-        text_content = raw.decode(enc, errors="replace")
+        text_content = decode_csv_text(raw, enc)
         delim = detect_delimiter(text_content)
         import csv as csv_mod
         lines = text_content.splitlines()
-        reader = csv_mod.reader(lines[:1], delimiter=delim, quotechar='"')
-        header = next(reader, [])
-        template = find_best_template(header, templates)
+        # Header steht bei den meisten Banken in Zeile 1 - manche (z.B. DKB) stellen davor
+        # aber eine Anzahl Metazeilen voran (Kontobezeichnung, Kontostand), die zwischen
+        # Exports variieren kann (Issue #398). Zeilen der Reihe nach prüfen und beim ersten
+        # Treffer stoppen - bei Banken mit Header in Zeile 1 weiterhin sofortiger Treffer
+        # wie bisher, das Scannen greift nur wenn Zeile 1 bei keinem Template passt.
+        template = None
+        for zeile in lines[:20]:
+            reader = csv_mod.reader([zeile], delimiter=delim, quotechar='"')
+            header = next(reader, [])
+            template = find_best_template(header, templates)
+            if template:
+                break
 
     if not template:
         raise HTTPException(

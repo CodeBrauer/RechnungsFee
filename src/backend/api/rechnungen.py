@@ -9,7 +9,7 @@ import json
 import re
 import shutil
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import List, Optional
@@ -42,6 +42,7 @@ from .schemas_rechnungen import (
     RechnungVorschauRequest, RechnungVorschauResponse, RechnungVorschauPosition,
 )
 from .schemas import StornoRequest
+from .nummernkreise import naechste_nummer
 
 BELEG_DIR = APP_DATA_DIR / "uploads" / "belege"
 TEMP_DIR = APP_DATA_DIR / "uploads" / "tmp"
@@ -54,28 +55,7 @@ router = APIRouter(prefix="/api/rechnungen", tags=["Rechnungen"])
 # Hilfsfunktionen
 # ---------------------------------------------------------------------------
 
-import re as _re
-
-
-def _belegnr_aus_format(format_str: str, datum: date, nr: int) -> str:
-    year_4 = str(datum.year)
-    year_2 = year_4[-2:]
-    month  = f"{datum.month:02d}"
-    day    = f"{datum.day:02d}"
-    result = (format_str
-              .replace("YYYY", year_4)
-              .replace("JJJJ", year_4)  # dt. Alias
-              .replace("YY",   year_2)
-              .replace("JJ",   year_2)  # dt. Alias: Jahr
-              .replace("MM",   month)
-              .replace("TT",   day))
-
-    def _pad(m: _re.Match) -> str:
-        return str(nr).zfill(len(m.group()))
-
-    result = _re.sub(r"#+", _pad, result)
-    result = _re.sub(r"NN+", _pad, result)  # dt. Alias: Nummer (mind. 2 N, damit einzelne Buchstaben in Präfixen nicht ersetzt werden)
-    return result
+from utils.belegnummer import belegnr_aus_format as _belegnr_aus_format
 
 
 def _fmt_menge(n: Decimal) -> str:
@@ -302,6 +282,8 @@ def _erzeuge_vorsteuer_ansprueche(rechnung: "Rechnung", db: Session) -> None:
 
     Muss nach _vorsteuer_kategorie_fehlt()-Prüfung aufgerufen werden (jede Position hat dann
     eine ermittelbare Kategorie)."""
+    unternehmen = db.query(Unternehmen).first()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer)
     netto_gruppen: dict[tuple[int | None, int], Decimal] = defaultdict(lambda: Decimal("0"))
     ust_gruppen: dict[tuple[int | None, int], Decimal] = defaultdict(lambda: Decimal("0"))
     for pos in rechnung.positionen:
@@ -322,7 +304,10 @@ def _erzeuge_vorsteuer_ansprueche(rechnung: "Rechnung", db: Session) -> None:
         sonderfall, ust03, ust04 = _klassifiziere_sonderfall(
             kat, rechnung.ist_reverse_charge, satz_d, ust03_default, ust04_default
         )
-        vst_abzug = satz > 0 or sonderfall == "einfuhr_ust"
+        # Kleinunternehmer §19 UStG: nie Vorsteuerabzug, unabhaengig vom (jetzt realen,
+        # Issue #397) USt-Satz der Position - der Satz spiegelt nur den tatsaechlich vom
+        # Lieferanten ausgewiesenen Betrag, begruendet aber keinen eigenen Abzug.
+        vst_abzug = (satz > 0 or sonderfall == "einfuhr_ust") and not ist_kleinunternehmer
         va = VorsteuerAnspruch(
             rechnung_id=rechnung.id,
             datum=rechnung.datum,
@@ -1250,7 +1235,8 @@ def rechnung_vorschau(data: RechnungVorschauRequest, db: Session = Depends(get_d
     wie create_rechnung()/update_rechnung() (Issue #332: Formular-Vorschau darf nicht mehr selbst
     rechnen, sondern muss dieselbe, einzige Berechnung wie beim Speichern abfragen)."""
     unternehmen = db.query(Unternehmen).first()
-    ist_kleinunternehmer = unternehmen.ist_kleinunternehmer if unternehmen else False
+    # §19 UStG betrifft nur Ausgangsdokumente (Issue #397) - siehe create_rechnung()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer and data.typ == "ausgang")
     ist_steuerfrei_ausland = (
         data.ist_reverse_charge or data.ist_eu_lieferung
         or data.ist_drittland_leistung or data.ist_ausfuhrlieferung
@@ -1295,7 +1281,10 @@ def create_rechnung(data: RechnungCreate, db: Session = Depends(get_db)):
         )
 
     unternehmen = db.query(Unternehmen).first()
-    ist_kleinunternehmer = unternehmen.ist_kleinunternehmer if unternehmen else False
+    # §19 UStG betrifft nur die eigenen Ausgangsrechnungen (keine USt auf eigene Umsätze) -
+    # bei Eingangsrechnungen ist der USt-Satz des Lieferanten real und wird nur nicht als
+    # Vorsteuer abgezogen (Issue #397). ist_kleinunternehmer hier NUR fuer _berechne_rechnung().
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer and data.typ == "ausgang")
 
     # Rechnungsnummer: aus Nummernkreis wenn nicht angegeben
     rechnungsnummer = data.rechnungsnummer
@@ -1329,20 +1318,15 @@ def create_rechnung(data: RechnungCreate, db: Session = Depends(get_db)):
                 rechnungsnummer = _naechste_proformanummer(data.datum, db)
             # else: Entwurf-Proforma ohne Nummer (wie Angebot-Entwurf)
         else:
+            # Kein hartcodierter "RE-"/"ER-"-Präfix mehr - das am Nummernkreis hinterlegte
+            # Format bestimmt die Nummer vollständig (Issue #399, Wunsch 1). Bestandsinstallationen
+            # werden per Migration von "YY####" auf "RE-YY####"/"ER-YY####" gehoben, damit sich
+            # am sichtbaren Ergebnis nichts ändert, bis jemand das Format bewusst anpasst.
             nk_typ = "rechnung_ausgang" if data.typ == "ausgang" else "rechnung_eingang"
-            nk = db.query(Nummernkreis).filter(Nummernkreis.typ == nk_typ).first()
-            if nk:
-                if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != data.datum.year:
-                    nk.naechste_nr = 1
-                nk.letztes_jahr = data.datum.year
-                nr = nk.naechste_nr
-                nk.naechste_nr += 1
-                prefix = "RE" if data.typ == "ausgang" else "ER"
-                rechnungsnummer = f"{prefix}-{_belegnr_aus_format(nk.format, data.datum, nr)}"
-            else:
+            rechnungsnummer = naechste_nummer(nk_typ, db, data.datum)
+            if not rechnungsnummer:
                 count = db.query(Rechnung).filter(Rechnung.typ == data.typ).count()
-                prefix = "RE" if data.typ == "ausgang" else "ER"
-                rechnungsnummer = f"{prefix}-{str(data.datum.year)[-2:]}{count + 1:04d}"
+                rechnungsnummer = f"{str(data.datum.year)[-2:]}{count + 1:04d}"
 
     # Proforma: faellig_am aus Unternehmens-Standard wenn nicht übergeben; kein Skonto
     proforma_faellig_am = data.faellig_am
@@ -1485,7 +1469,8 @@ def update_rechnung(rechnung_id: int, data: RechnungUpdate, db: Session = Depend
         raise HTTPException(status_code=409, detail="Nur offene Aufträge können bearbeitet werden.")
 
     unternehmen = db.query(Unternehmen).first()
-    ist_kleinunternehmer = unternehmen.ist_kleinunternehmer if unternehmen else False
+    # §19 UStG betrifft nur Ausgangsrechnungen (Issue #397) - siehe create_rechnung()
+    ist_kleinunternehmer = bool(unternehmen and unternehmen.ist_kleinunternehmer and rechnung.typ == "ausgang")
 
     for field in ("rechnungsnummer", "datum", "leistung_von", "leistung_bis", "faellig_am", "kunde_id",
                   "lieferant_id", "partner_freitext", "partner_strasse", "partner_hausnummer",
@@ -1934,7 +1919,17 @@ def rechnung_als_pdf(rechnung_id: int, vorlage: int = -1, download: bool = False
         # Kein archiviertes Original mehr auffindbar (Datei gelöscht o.ä.) → wie bisher frisch generieren.
 
     # Kopie: Original bereits gespeichert → gespeichertes PDF + Wasserzeichen zurückgeben
-    if darf_archiviert and rechnung.original_pdf_pfad:
+    # Ausnahme (Issue #394): liegt das Archivieren nur Sekunden zurück, ist diese Anfrage mit
+    # hoher Wahrscheinlichkeit noch derselbe Druckvorgang, nicht ein echtes zweites Drucken -
+    # openInPdfWindow() (client.ts) navigiert das Tauri-Fenster direkt auf diese Backend-URL,
+    # und der native PDF-Viewer darin fragt beim Klick auf seinen eigenen Speichern-Button
+    # dieselbe URL ein zweites Mal ab. Die erste Anfrage hat das Original da bereits archiviert -
+    # ohne diese Gnadenfrist bekäme der allererste Speichervorgang fälschlich den KOPIE-Stempel.
+    _gerade_erst_archiviert = (
+        rechnung.ausgegeben_am is not None
+        and datetime.now() - rechnung.ausgegeben_am < timedelta(seconds=30)
+    )
+    if darf_archiviert and rechnung.original_pdf_pfad and not _gerade_erst_archiviert:
         kopie_bytes = lade_original_mit_kopie_stempel(APP_DATA_DIR, rechnung.original_pdf_pfad)
         if kopie_bytes:
             _dt_datei = _dok_typ
@@ -2440,7 +2435,11 @@ def _ausgangs_buchungsgruppen(
     gruppen_brutto_mixed: dict[tuple[int, bool], Decimal] = {}
     ust_satz = Decimal("0")
 
-    if ist_kleinunternehmer or not rechnung.positionen:
+    # trotz des Funktionsnamens auch von Eingangsrechnungs-Zahlungen genutzt (siehe Docstring) -
+    # §19 UStG zwingt nur die eigenen Ausgangsrechnungen auf 0% (Issue #397); bei einer
+    # Eingangsrechnung ist der reale Lieferanten-USt-Satz weiterhin relevant fuer die
+    # Netto/USt-Aufteilung der Zahlungsbuchung (nur der Vorsteuerabzug bleibt gesperrt).
+    if (ist_kleinunternehmer and rechnung.typ == "ausgang") or not rechnung.positionen:
         return satz_ratios, ust_satz, False, gruppen_keys, gruppen_kategorie, gruppen_marge, gruppen_brutto_mixed
 
     hat_25a = any(pos.differenzbesteuerung for pos in rechnung.positionen)
@@ -2718,7 +2717,12 @@ def zahlung_bar_erstellen(rechnung_id: int, data: BarZahlungCreate, db: Session 
                 u = (brutto - n).quantize(Decimal("0.01"), ROUND_HALF_UP)
         else:
             n, u = brutto, Decimal("0.00")
-        vst_abzug = (art == "Ausgabe" and (satz > 0 or sonderfall == "einfuhr_ust"))
+        # Kleinunternehmer §19 UStG: nie Vorsteuerabzug, auch wenn satz jetzt den realen
+        # Lieferanten-USt-Satz zeigt (Issue #397 - siehe _ausgangs_buchungsgruppen()).
+        vst_abzug = (
+            art == "Ausgabe" and (satz > 0 or sonderfall == "einfuhr_ust")
+            and not (unternehmen and unternehmen.ist_kleinunternehmer)
+        )
         e = Journaleintrag(
             datum=data.datum,
             belegnr=_naechste_belegnr_journal(db, data.datum),
@@ -3980,16 +3984,14 @@ def _naechste_lieferscheinnummer(datum: date, db: Session) -> str:
 
 
 def _naechste_rechnungsnummer(datum: date, db: Session) -> str:
-    nk = db.query(Nummernkreis).filter(Nummernkreis.typ == "rechnung_ausgang").first()
-    if nk:
-        if nk.reset_jaehrlich and nk.letztes_jahr and nk.letztes_jahr != datum.year:
-            nk.naechste_nr = 1
-        nk.letztes_jahr = datum.year
-        nr = nk.naechste_nr
-        nk.naechste_nr += 1
-        return f"RE-{_belegnr_aus_format(nk.format, datum, nr)}"
+    """Rechnungsnummer für aus Lieferschein/Angebot/Auftrag/Proforma konvertierte bzw. für
+    Ersatzrechnungen. Kein hartcodierter "RE-"-Präfix mehr, das Nummernkreis-Format entscheidet
+    vollständig (Issue #399, Wunsch 1)."""
+    rechnungsnummer = naechste_nummer("rechnung_ausgang", db, datum)
+    if rechnungsnummer:
+        return rechnungsnummer
     count = db.query(Rechnung).filter(Rechnung.typ == "ausgang", Rechnung.dokument_typ == "Rechnung").count()
-    return f"RE-{str(datum.year)[-2:]}{count + 1:04d}"
+    return f"{str(datum.year)[-2:]}{count + 1:04d}"
 
 
 @router.post("/{ls_id}/rechnung-erstellen", response_model=RechnungResponse, status_code=201)
